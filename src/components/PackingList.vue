@@ -98,8 +98,11 @@ function saveEdited(patch: Placement) {
 
       <button @click="showCreateModal = true">＋ Добавить груз</button>
       <button @click="props.onOptimize" :disabled="placements.length === 0">🔄 Оптимизировать</button>
-      <button @click="showSaveModal = true" :disabled="placements.length === 0">
+      <button :disabled="placements.length === 0">
         💾 Сохранить
+      </button>
+      <button @click="showSaveModal = true" :disabled="placements.length === 0">
+        📄 Выгрузить в PDF
       </button>
     </div>
 
