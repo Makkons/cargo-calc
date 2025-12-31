@@ -1,251 +1,335 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { usePackingStore } from '@/stores/packingStore'
-import type { PackingItem } from '@/types'
+import type { Placement } from '@/engine/types'
 import CargoModal from '@/components/modals/CargoModal.vue'
+import CargoPreview from '@/components/ui/CargoPreview.vue'
+import type { CargoTemplate } from '@/data/templates/types'
+import PackingSaveModal from '@/components/modals/PackingSaveModal.vue'
 
-const store = usePackingStore()
+type PackingMode = 'uniform' | 'dense'
 
-const showModal = ref(false)
-const editingItem = ref<PackingItem | null>(null)
+const props = defineProps<{
+  title: string
+  comment?: string
+  shippingDate?: string
 
-/* ============================
-   АКТИВНЫЙ СЛОЙ
-============================ */
+  placements: Placement[]
+  canRemove: (id: string) => boolean
+  mode: PackingMode
 
-const activeLayerIndex = computed(() => store.activeLayerIndex)
+  onRotate: (id: string) => void
+  onSetMode: (mode: PackingMode) => void
+  onRemove: (id: string) => void
+  onEdit: (id: string, patch: Partial<Placement>) => void
+  onOptimize: () => void
+  onAddCustom: (template: CargoTemplate) => void
 
-/* ============================
-   ГРУЗЫ АКТИВНОГО СЛОЯ
-============================ */
+  volumeFill: number
+  usedWeight: number
 
-const itemsInActiveLayer = computed(() => {
-  const layer = store.layers[store.activeLayerIndex]
-  if (!layer) return []
+  onSave: (meta: {
+    title: string
+    comment?: string
+    shippingDate?: string
+  }) => void
+}>()
 
-  return layer.itemIds
-      .map(id => store.items.find(i => i.id === id))
-      .filter(Boolean) as PackingItem[]
-})
+const showEditModal = ref(false)
+const showCreateModal = ref(false)
+const showSaveModal = ref(false)
+const editingPlacementId = ref<string | null>(null)
 
-/* ============================
-   ACTIONS
-============================ */
+const editingPlacement = computed(() =>
+    editingPlacementId.value
+        ? props.placements.find(p => p.id === editingPlacementId.value) ?? null
+        : null
+)
 
-function openCreate() {
-  editingItem.value = null
-  showModal.value = true
+function openEdit(p: Placement) {
+  if (!props.canRemove(p.id)) return
+  editingPlacementId.value = p.id
+  showEditModal.value = true
 }
 
-function openEdit(item: PackingItem) {
-  editingItem.value = item
-  showModal.value = true
-}
+function saveEdited(patch: Placement) {
+  if (!editingPlacement.value) return
 
-function save(item: PackingItem) {
-  if (editingItem.value) {
-    store.updateItem(item)
-  } else {
-    store.addItem(item)
-  }
-}
+  props.onEdit(editingPlacement.value.id, {
+    name: patch.name,
+    color: patch.color,
+    weight: patch.weight,
+    width: patch.width,
+    length: patch.length,
+    height: patch.height,
+    fragile: patch.fragile,
+  })
 
-function removeItem(id: string) {
-  store.removeItem(id)
-}
-
-function setActiveLayer(index: number) {
-  store.setActiveLayer(index)
-}
-
-function addLayer() {
-  store.createNextLayer()
+  showEditModal.value = false
+  editingPlacementId.value = null
 }
 </script>
 
 <template>
   <div class="packing-list">
-    <h2>Список компоновки</h2>
+    <h2>{{ title }}</h2>
 
-    <!-- ============================
-         ВКЛАДКИ СЛОЁВ
-    ============================ -->
-    <div class="layers-tabs">
-      <button
-          v-for="(layer, index) in store.layers"
-          :key="layer.id"
-          class="layer-tab"
-          :class="{ active: index === activeLayerIndex }"
-          @click="setActiveLayer(index)"
-      >
-        Слой {{ index + 1 }}
-      </button>
+    <p v-if="comment">{{ comment }}</p>
+    <p v-if="shippingDate">Отгрузка: {{ shippingDate }}</p>
 
-      <button class="layer-tab add" :disabled="!store.canCreateLayer" @click="addLayer">
-        +
-      </button>
+    <div class="status">
+      <div class="bar">
+        <div class="bar-fill" :style="{ width: Math.round(volumeFill * 100) + '%' }" />
+      </div>
+      <div class="labels">
+        <span>Объём: {{ Math.round(volumeFill * 100) }}%</span>
+        <span v-if="usedWeight > 0">Вес: {{ usedWeight }} кг</span>
+      </div>
     </div>
 
-    <!-- ============================
-         ACTIONS
-    ============================ -->
     <div class="actions">
-      <button @click="openCreate">
-        ➕ Добавить груз
-      </button>
-
-      <button
-          v-if="store.items.length > 0"
-          @click="store.optimize()"
-      >
-        Оптимизировать
-      </button>
-    </div>
-
-    <!-- ============================
-         СПИСОК ГРУЗОВ СЛОЯ
-    ============================ -->
-    <div v-if="itemsInActiveLayer.length === 0" class="empty">
-      В этом слое грузов нет
-    </div>
-
-    <div
-        v-for="item in itemsInActiveLayer"
-        :key="item.id"
-        class="packing-item"
-    >
-      <div class="info">
-        <strong>{{ item.name }}</strong>
-
-        <div class="size">
-          {{ item.size.width }} ×
-          {{ item.size.length }} ×
-          {{ item.size.height }}
-        </div>
-
-        <div v-if="item.weight" class="weight">
-          {{ item.weight }} кг
-        </div>
-
-        <div class="flags">
-          <span v-if="item.fragile">🧱 хрупкий</span>
-          <span v-if="item.hold">📌 фиксированный</span>
-        </div>
+      <div class="mode-switch">
+        <button :class="{ active: mode === 'uniform' }" @click="props.onSetMode('uniform')">
+          Равномерно
+        </button>
+        <button :class="{ active: mode === 'dense' }" @click="props.onSetMode('dense')">
+          Плотно
+        </button>
       </div>
 
-      <div
-          class="color"
-          :style="{ backgroundColor: item.color }"
-      />
+      <button @click="showCreateModal = true">＋ Добавить груз</button>
+      <button @click="props.onOptimize" :disabled="placements.length === 0">🔄 Оптимизировать</button>
+      <button @click="showSaveModal = true" :disabled="placements.length === 0">
+        💾 Сохранить
+      </button>
+    </div>
+
+    <div v-if="placements.length === 0" class="empty">
+      Грузы не добавлены
+    </div>
+
+    <div v-for="p in placements" :key="p.id" class="packing-item">
+      <div class="info">
+        <strong>{{ p.name || 'Груз' }}</strong>
+        <div class="size">{{ p.width }} × {{ p.length }} × {{ p.height }}</div>
+        <div v-if="p.weight != null" class="weight">{{ p.weight }} кг</div>
+      </div>
+
+      <CargoPreview :width="p.width" :length="p.length" :color="p.color" />
 
       <div class="controls">
-        <button @click="openEdit(item)">✏️</button>
-        <button @click="removeItem(item.id)">✕</button>
+        <button @click="openEdit(p)" :disabled="!canRemove(p.id)">✏️</button>
+        <button @click="props.onRotate(p.id)" :disabled="!canRemove(p.id)">🔄</button>
+        <button @click="props.onRemove(p.id)" :disabled="!canRemove(p.id)">✕</button>
       </div>
     </div>
-  </div>
 
-  <!-- ============================
-       MODAL
-  ============================ -->
-  <CargoModal
-      v-model="showModal"
-      :item="editingItem || undefined"
-      @save="save"
-  />
+    <CargoModal
+        v-if="editingPlacement"
+        :open="showEditModal"
+        mode="edit"
+        :item="editingPlacement"
+        @close="showEditModal = false"
+        @save="saveEdited"
+    />
+
+    <CargoModal
+        v-if="showCreateModal"
+        :open="true"
+        mode="create"
+        :item="undefined"
+        @close="showCreateModal = false"
+        @save="props.onAddCustom"
+    />
+
+    <PackingSaveModal
+        :open="showSaveModal"
+        :defaultTitle="title"
+        @close="showSaveModal = false"
+        @save="props.onSave"
+    />
+  </div>
 </template>
 
 <style scoped>
 .packing-list {
-  padding: 16px;
-  border: 1px solid #ddd;
-  max-height: 500px;
-  overflow: auto;
+  padding: 20px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.04);
 }
 
-/* ============================
-   TABS
-============================ */
+/* ===== Header ===== */
 
-.layers-tabs {
+.packing-list h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.packing-list p {
+  margin: 0;
+  font-size: 13px;
+  color: #4b5563;
+}
+
+/* ===== Status ===== */
+
+.status {
+  margin: 14px 0 18px;
+}
+
+.bar {
+  height: 8px;
+  background: #e5e7eb;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4caf50, #66bb6a);
+  transition: width 0.25s ease;
+}
+
+.labels {
   display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-
-.layer-tab {
-  padding: 4px 10px;
-  border: 1px solid #ccc;
-  background: #f7f7f7;
-  cursor: pointer;
+  justify-content: space-between;
   font-size: 12px;
+  color: #6b7280;
+  margin-top: 6px;
 }
 
-.layer-tab.active {
-  background: #1976d2;
-  color: #fff;
-  border-color: #1976d2;
-}
-
-.layer-tab.add {
-  font-weight: bold;
-}
-
-/* ============================
-   ACTIONS
-============================ */
+/* ===== Actions ===== */
 
 .actions {
   display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
 }
 
-/* ============================
-   ITEMS
-============================ */
+.actions button {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #111827;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.actions button:hover:not(:disabled) {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== Mode Switch ===== */
+
+.mode-switch {
+  display: flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #d1d5db;
+}
+
+.mode-switch button {
+  padding: 6px 14px;
+  font-size: 12px;
+  background: #f9fafb;
+  border: none;
+  cursor: pointer;
+  color: #374151;
+}
+
+.mode-switch button.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+.mode-switch button.active:hover {
+  background: #174fca;
+}
+
+/* ===== Empty ===== */
 
 .empty {
-  color: #888;
-  font-size: 14px;
+  font-size: 13px;
+  color: #9ca3af;
+  padding: 12px 0;
 }
+
+/* ===== Items ===== */
 
 .packing-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid #eee;
-  margin-bottom: 6px;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  margin-bottom: 8px;
+  background: #fafafa;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.packing-item:hover {
+  background: #f9fafb;
+  border-color: #d1d5db;
 }
 
 .info {
   flex: 1;
 }
 
+.info strong {
+  font-size: 14px;
+  font-weight: 500;
+  color: #111827;
+}
+
 .size {
   font-size: 12px;
-  color: #666;
+  color: #6b7280;
 }
 
 .weight {
   font-size: 12px;
+  color: #374151;
 }
 
-.flags {
-  font-size: 11px;
-  color: #999;
-}
-
-.color {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-}
+/* ===== Controls ===== */
 
 .controls {
   display: flex;
-  gap: 4px;
+  gap: 6px;
+}
+
+.controls button {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.controls button:hover:not(:disabled) {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 </style>

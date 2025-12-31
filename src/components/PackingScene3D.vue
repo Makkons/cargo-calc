@@ -1,58 +1,75 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, watch, ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three-stdlib'
-import type { PackingResult } from '@/types'
+
+/* ======================
+   PROPS
+====================== */
 
 const props = defineProps<{
-  result: PackingResult
   container: {
     width: number
     length: number
     height: number
   } | null
-  activeResultLayerIndex: number
+
+  placements: {
+    id: string
+    x: number
+    y: number
+    z: number
+    width: number
+    length: number
+    height: number
+    color?: string
+  }[]
 }>()
+
+/* ======================
+   REFS
+====================== */
 
 const containerRef = ref<HTMLDivElement | null>(null)
 
-let scene: THREE.Scene | null = null
-let camera: THREE.PerspectiveCamera | null = null
-let renderer: THREE.WebGLRenderer | null = null
-let controls: OrbitControls | null = null
-let animationId = 0
+let scene: THREE.Scene
+let camera: THREE.PerspectiveCamera
+let renderer: THREE.WebGLRenderer
+let controls: OrbitControls
+let frameId = 0
 
-// =======================
-// INIT
-// =======================
+/* ======================
+   INIT
+====================== */
 
 function initScene(width: number, height: number) {
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0xf5f5f5)
 
-  camera = new THREE.PerspectiveCamera(45, width / height, 1, 50000)
+  camera = new THREE.PerspectiveCamera(45, width / height, 1, 100_000)
 
   renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setSize(width, height)
+  renderer.setPixelRatio(window.devicePixelRatio)
+
   containerRef.value!.appendChild(renderer.domElement)
 
   controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
+  controls.dampingFactor = 0.08
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.6))
 
-  const light = new THREE.DirectionalLight(0xffffff, 1)
+  const light = new THREE.DirectionalLight(0xffffff, 0.8)
   light.position.set(1, 2, 1)
   scene.add(light)
 }
 
-// =======================
-// CLEAR
-// =======================
+/* ======================
+   CLEAR
+====================== */
 
 function clearScene() {
-  if (!scene) return
-
   const toRemove: THREE.Object3D[] = []
 
   scene.traverse(obj => {
@@ -61,15 +78,27 @@ function clearScene() {
     }
   })
 
-  toRemove.forEach(obj => scene!.remove(obj))
+  toRemove.forEach(obj => {
+    scene.remove(obj)
+
+    if ((obj as THREE.Mesh).geometry) {
+      ;(obj as THREE.Mesh).geometry.dispose()
+    }
+
+    if ((obj as THREE.Mesh).material) {
+      const mat = (obj as THREE.Mesh).material
+      if (Array.isArray(mat)) mat.forEach(m => m.dispose())
+      else mat.dispose()
+    }
+  })
 }
 
-// =======================
-// CONTAINER
-// =======================
+/* ======================
+   CONTAINER
+====================== */
 
 function renderContainer() {
-  if (!scene || !props.container || !camera || !controls) return
+  if (!props.container) return
 
   const { width, height, length } = props.container
 
@@ -87,81 +116,94 @@ function renderContainer() {
 
   scene.add(wireframe)
 
-  camera.position.set(width * 1.3, height * 1.2, length * 1.3)
-  controls.target.set(width / 2, height / 2, length / 2)
+  camera.position.set(
+      width * 1.4,
+      height * 1.2,
+      length * 1.4
+  )
+
+  controls.target.set(
+      width / 2,
+      height / 2,
+      length / 2
+  )
+
   controls.update()
 }
 
-// =======================
-// ITEMS (С УЧЁТОМ СЛОЁВ)
-// =======================
+/* ======================
+   PLACEMENTS
+====================== */
 
-function renderItems() {
-  if (!scene) return
+function renderPlacements() {
+  for (const item of props.placements) {
 
-  props.result.layers.forEach((layer, layerIndex) => {
-    const isActive = layerIndex === props.activeResultLayerIndex
+    const geometry = new THREE.BoxGeometry(
+        item.width,
+        item.height,
+        item.length
+    )
 
-    layer.items.forEach(item => {
-      const material = new THREE.MeshStandardMaterial({
-        color: item.color || '#9e9e9e',
-        transparent: true,
-        opacity: isActive ? 1 : 0.25,
-        emissive: isActive
-            ? new THREE.Color(0x222222)
-            : new THREE.Color(0x000000),
-      })
+// сам груз
+    const mesh = new THREE.Mesh(
+        geometry,
+        new THREE.MeshStandardMaterial({
+          color: item.color || '#9e9e9e',
+          transparent: true,
+          opacity: 1,
+        })
+    )
 
-      const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(
-              item.size.width,
-              item.size.height,
-              item.size.length
-          ),
-          material
-      )
+// контур (stroke)
+    const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(geometry),
+        new THREE.LineBasicMaterial({
+          color: 0x000000,
+          linewidth: 1, // ⚠️ в WebGL реально игнорируется, но оставим
+        })
+    )
 
-      mesh.position.set(
-          item.position.x + item.size.width / 2,
-          item.position.z + item.size.height / 2,
-          item.position.y + item.size.length / 2
-      )
+// позиция (ОБЯЗАТЕЛЬНО одинаковая)
+    mesh.position.set(
+        item.x + item.width / 2,
+        item.z + item.height / 2,
+        item.y + item.length / 2
+    )
 
-      scene.add(mesh)
-    })
-  })
+    edges.position.copy(mesh.position)
+
+// добавляем оба
+    scene.add(mesh)
+    scene.add(edges)
+  }
 }
 
-// =======================
-// RERENDER
-// =======================
+/* ======================
+   RENDER
+====================== */
 
-function rerender() {
-  if (!scene) return
-
+function render() {
   clearScene()
 
   if (!props.container) return
 
   renderContainer()
-  renderItems()
+  renderPlacements()
 }
 
-// =======================
-// LOOP
-// =======================
+/* ======================
+   LOOP
+====================== */
 
 function animate() {
-  if (!renderer || !scene || !camera) return
-
-  controls?.update()
+  controls.update()
   renderer.render(scene, camera)
-  animationId = requestAnimationFrame(animate)
+  frameId = requestAnimationFrame(animate)
 }
 
-// =======================
-// LIFECYCLE
-// =======================
+/* ======================
+   LIFECYCLE
+====================== */
 
 onMounted(() => {
   if (!containerRef.value) return
@@ -171,28 +213,28 @@ onMounted(() => {
       containerRef.value.clientHeight
   )
 
-  rerender()
+  render()
   animate()
 })
 
 onBeforeUnmount(() => {
-  cancelAnimationFrame(animationId)
-  renderer?.dispose()
+  cancelAnimationFrame(frameId)
+  renderer.dispose()
 })
 
-// =======================
-// WATCHERS
-// =======================
+/* ======================
+   WATCHERS
+====================== */
 
 watch(
-    () => [props.container, props.result, props.activeResultLayerIndex],
-    () => rerender(),
+    () => [props.container, props.placements],
+    render,
     { deep: true }
 )
 </script>
 
 <template>
-  <div ref="containerRef" class="scene" />
+  <div ref="containerRef" class="scene scene3D" />
 </template>
 
 <style scoped>

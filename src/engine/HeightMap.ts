@@ -49,13 +49,13 @@ export class HeightMap {
     getBaseHeight(cells: Cell[]): number | null {
         if (cells.length === 0) return null
 
-        const base = Math.max(...cells.map(c => c.height))
+        const min = Math.min(...cells.map(c => c.height))
+        const max = Math.max(...cells.map(c => c.height))
 
-        for (const c of cells) {
-            if (c.height !== base) return null
-        }
+        // допустимый перепад = step (или 0, если хочешь строго)
+        if (max - min > this.step) return null
 
-        return base
+        return max
     }
 
     /**
@@ -84,14 +84,26 @@ export class HeightMap {
     /**
      * Есть ли над placement другие грузы
      */
-    hasPlacementAbove(id: string): boolean {
-        for (const column of this.grid) {
-            for (const cell of column) {
-                if (cell.topPlacementId !== null && cell.topPlacementId !== id) {
+    hasPlacementAbove(placement: Placement): boolean {
+        const x0 = Math.floor(placement.x / this.step)
+        const y0 = Math.floor(placement.y / this.step)
+        const x1 = Math.ceil((placement.x + placement.width) / this.step)
+        const y1 = Math.ceil((placement.y + placement.length) / this.step)
+
+        const topZ = placement.z + placement.height
+
+        for (let i = x0; i < x1; i++) {
+            for (let j = y0; j < y1; j++) {
+                const cell = this.grid[i]?.[j]
+                if (!cell) continue
+
+                // ❗ если НАД этим грузом есть что-то
+                if (cell.height > topZ) {
                     return true
                 }
             }
         }
+
         return false
     }
 

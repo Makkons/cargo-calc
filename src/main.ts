@@ -1,7 +1,9 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
+import { initDemoStorage } from './utils/storageInit.ts'
 
+initDemoStorage()
 const app = createApp(App)
 
 app.use(createPinia())

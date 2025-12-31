@@ -62,12 +62,19 @@ export class PackingEngine {
         return z
     }
 
+    canModifyPlacement(id: string): boolean {
+        const p = this.getPlacementById(id)
+        if (!p) return false
+        if (p.locked) return false
+        return !this.heightMap.hasPlacementAbove(p)
+    }
+
     /**
      * 🔍 Поиск оптимального размещения
      */
     findPlacement(
         template: ItemTemplate,
-        options: FindPlacementOptions
+        options: FindPlacementOptions = { mode: 'uniform' }
     ): Placement | null {
         let best: Placement | null = null
         let bestScore: number | null = null
@@ -96,7 +103,7 @@ export class PackingEngine {
                     bestScore = score
                     best = {
                         id: crypto.randomUUID(),
-                        templateId: template.id,
+                        templateId: template.templateId,
                         x,
                         y,
                         z,
@@ -137,10 +144,35 @@ export class PackingEngine {
         template: ItemTemplate,
         options: { mode: 'uniform' | 'dense' }
     ): Placement | null {
-        const placement = this.findPlacement(template, options)
+        const pos = this.findPlacement(template, options)
 
-        if (!placement) {
+        if (!pos) {
             return null
+        }
+
+        const placement: Placement = {
+            // идентичность
+            id: template.id,
+            templateId: template.templateId,
+
+            // метаданные — 🔥 КЛЮЧЕВО
+            name: template.name,
+            color: template.color,
+            weight: template.weight,
+
+            // геометрия
+            width: template.width,
+            length: template.length,
+            height: template.height,
+
+            // позиция
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+
+            // флаги
+            fragile: template.fragile,
+            locked: false,
         }
 
         this.commit()

@@ -1,4 +1,4 @@
-// data/templates/types.ts
+
 export interface CargoTemplate {
     id: string
     name: string

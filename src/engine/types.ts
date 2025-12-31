@@ -9,21 +9,35 @@ export type Cell = {
     topPlacementId: string | null
 }
 
-export type Placement = {
+export interface Placement {
     id: string
-    templateId: string
-    x: number
-    y: number
-    z: number
+
+    // связь
+    templateId?: string
+
+    // метаданные
+    name: string
+    color: string
+    weight?: number
+
+    // геометрия
     width: number
     length: number
     height: number
-    fragile?: boolean
+
+    // позиция
+    x: number
+    y: number
+    z: number
+
+    // флаги
+    fragile: boolean
     locked?: boolean
 }
 
-export type ItemTemplate = {
-    id: string
+export interface ItemTemplate {
+    id: string            // ← ЭТО ID ГРУЗА
+    templateId?: string   // ← ссылка на CargoTemplate
     width: number
     length: number
     height: number
@@ -32,4 +46,15 @@ export type ItemTemplate = {
 
 export type EngineState = {
     placements: Placement[]
+}
+
+export interface PackingInputItem {
+    templateId: string
+    width: number
+    length: number
+    height: number
+    fragile?: boolean
+    weight?: number
+    color?: string
+    name?: string
 }

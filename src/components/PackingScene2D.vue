@@ -1,132 +1,278 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import type { Placement, Container } from '@/engine/types'
+
+/* =========================
+   PROPS
+========================= */
 
 const props = defineProps<{
   container: Container
   placements: Placement[]
   canModify: (id: string) => boolean
   onMove: (id: string, x: number, y: number) => Placement | null
+  step: number
 }>()
 
-const rootRef = ref<HTMLDivElement | null>(null)
+/* =========================
+   REFS
+========================= */
 
+const containerEl = ref<HTMLDivElement | null>(null)
 const draggingId = ref<string | null>(null)
-const startMouse = ref({ x: 0, y: 0 })
-const startPos = ref({ x: 0, y: 0 })
 
-const scale = computed(() => {
-  if (!rootRef.value) return 1
-  return rootRef.value.clientWidth / props.container.width
-})
+const preview = ref<{
+  x: number
+  y: number
+  valid: boolean
+} | null>(null)
 
-// =========================
-// DRAG
-// =========================
+/* =========================
+   UTILS
+========================= */
 
-function onMouseDown(e: MouseEvent, p: Placement) {
+function snap(value: number, step: number) {
+  return Math.round(value / step) * step
+}
+
+function getPlacement(id: string) {
+  return props.placements.find(p => p.id === id) ?? null
+}
+
+/* =========================
+   DRAG LOGIC
+========================= */
+
+function onMouseDown(p: Placement, e: MouseEvent) {
   if (!props.canModify(p.id)) return
 
   draggingId.value = p.id
-  startMouse.value = { x: e.clientX, y: e.clientY }
-  startPos.value = { x: p.x, y: p.y }
+  preview.value = {
+    x: p.x,
+    y: p.y,
+    valid: true,
+  }
 
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
-}
 
-function onMouseMove(e: MouseEvent) {
-  if (!draggingId.value) return
   e.preventDefault()
 }
 
-function onMouseUp(e: MouseEvent) {
-  if (!draggingId.value) return
+const scale = computed(() => {
+  if (!containerEl.value) return 1
+  return containerEl.value.clientWidth / props.container.width
+})
 
-  const dx = (e.clientX - startMouse.value.x) / scale.value
-  const dy = (e.clientY - startMouse.value.y) / scale.value
+function onMouseMove(e: MouseEvent) {
+  if (!draggingId.value || !preview.value || !containerEl.value) return
 
-  const x = Math.round(startPos.value.x + dx)
-  const y = Math.round(startPos.value.y + dy)
+  const rect = containerEl.value.getBoundingClientRect()
+  const p = getPlacement(draggingId.value)
+  if (!p) return
 
-  const ok = props.onMove(draggingId.value, x, y)
+  const rawX = (e.clientX - rect.left) / scale.value
+  const rawY = (e.clientY - rect.top) / scale.value
 
+  const x = snap(rawX, props.step)
+  const y = snap(rawY, props.step)
+
+  // 🔍 ПРОВЕРКА ЧЕРЕЗ ENGINE (без коммита)
+  const test = props.onMove(p.id, x, y)
+
+  preview.value = {
+    x,
+    y,
+    valid: test !== null,
+  }
+}
+
+function onMouseUp() {
+  if (!draggingId.value || !preview.value) {
+    cleanup()
+    return
+  }
+
+  if (preview.value.valid) {
+    props.onMove(
+        draggingId.value,
+        preview.value.x,
+        preview.value.y
+    )
+  }
+
+  cleanup()
+}
+
+function cleanup() {
   draggingId.value = null
+  preview.value = null
 
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
 }
+
+onBeforeUnmount(cleanup)
+
+/* =========================
+   STYLES
+========================= */
+
+function itemStyle(p: Placement) {
+  return {
+    left: p.x * scale.value + 'px',
+    top: p.y * scale.value + 'px',
+    width: p.width * scale.value + 'px',
+    height: p.length * scale.value + 'px',
+    background: p.color || '#9e9e9e',
+    border: '1px solid #333',
+  }
+}
+
+const previewStyle = computed(() => {
+  if (!preview.value || !draggingId.value) return {}
+
+  const p = getPlacement(draggingId.value)
+  if (!p) return {}
+
+  return {
+    left: preview.value.x * scale.value + 'px',
+    top: preview.value.y * scale.value + 'px',
+    width: p.width * scale.value + 'px',
+    height: p.length * scale.value + 'px',
+  }
+})
 </script>
 
 <template>
-  <div class="scene-2d" ref="rootRef">
-    <!-- container -->
+  <div
+      ref="containerEl"
+      class="scene scene2D"
+      :style="{
+    aspectRatio: `${container.width} / ${container.length}`,
+  }"
+  >
+    <!-- GRID -->
     <div
-        class="container"
-        :style="{
-        width: container.width * scale + 'px',
-        height: container.length * scale + 'px',
-      }"
-    >
-      <!-- items -->
-      <div
-          v-for="p in placements"
-          :key="p.id"
-          class="item"
-          :class="{
-          locked: !canModify(p.id),
-          dragging: draggingId === p.id,
-        }"
-          :style="{
-          left: p.x * scale + 'px',
-          top: p.y * scale + 'px',
-          width: p.width * scale + 'px',
-          height: p.length * scale + 'px',
-          background: p.color || '#9e9e9e',
-        }"
-          @mousedown="e => onMouseDown(e, p)"
-      >
-        <span class="label">{{ p.name ?? 'Груз' }}</span>
-      </div>
-    </div>
+        v-for="x in Math.floor(container.width / step)"
+        :key="'gx' + x"
+        class="grid-line vertical"
+        :style="{ left: x * step * scale + 'px' }"
+    />
+
+    <div
+        v-for="y in Math.floor(container.length / step)"
+        :key="'gy' + y"
+        class="grid-line horizontal"
+        :style="{ top: y * step * scale + 'px' }"
+    />
+
+    <!-- ITEMS -->
+    <div
+        v-for="p in placements"
+        :key="p.id"
+        class="item"
+        :style="itemStyle(p)"
+        @mousedown="e => onMouseDown(p, e)"
+    />
+
+    <!-- PREVIEW -->
+    <div
+        v-if="preview && draggingId"
+        class="preview"
+        :class="{ invalid: !preview.valid }"
+        :style="previewStyle"
+    />
   </div>
 </template>
 
 <style scoped>
-.scene-2d {
+/* =========================
+   SCENE (CANVAS)
+========================= */
+
+.scene {
   width: 100%;
-  overflow: auto;
-  border: 1px solid #ddd;
-  padding: 8px;
+  position: relative;
+  box-sizing: border-box;
+
+  /* 🔒 КРИТИЧНО */
+  overflow: hidden;
+  isolation: isolate;
+  contain: layout paint size;
+
+  background-color: #fafafa;
+  border: 1px solid #d1d5db;
+
+  user-select: none;
 }
 
-.container {
-  position: relative;
-  background: #fafafa;
-  border: 2px solid #000;
+/* =========================
+   GRID (VISUAL ONLY)
+========================= */
+
+.grid-line {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.06);
+  z-index: 0;
 }
+
+.grid-line.vertical {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.grid-line.horizontal {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+/* =========================
+   ITEMS
+========================= */
 
 .item {
   position: absolute;
   box-sizing: border-box;
-  border: 1px solid #000;
+
   cursor: grab;
-  user-select: none;
+  z-index: 2;
+
+  /* 🔒 не влияет на layout */
+  outline: 1px solid rgba(0, 0, 0, 0.4);
+  outline-offset: -1px;
+
+  will-change: transform;
 }
 
-.item.dragging {
-  opacity: 0.7;
+.item:active {
   cursor: grabbing;
 }
 
-.item.locked {
-  opacity: 0.4;
-  cursor: not-allowed;
+/* =========================
+   PREVIEW
+========================= */
+
+.preview {
+  position: absolute;
+  pointer-events: none;
+
+  z-index: 5;
+
+  box-sizing: border-box;
+
+  /* ❗ outline вместо border */
+  outline: 2px dashed #4caf50;
+  outline-offset: -2px;
+
+  background: rgba(76, 175, 80, 0.25);
 }
 
-.label {
-  font-size: 10px;
-  color: #000;
-  padding: 2px;
+.preview.invalid {
+  outline-color: #f44336;
+  background: rgba(244, 67, 54, 0.25);
 }
 </style>
