@@ -11,7 +11,7 @@ export class PackingCommandExecutor {
             case 'addItem': {
                 const placement = this.engine.addItem(
                     cmd.template,
-                    { mode: cmd.mode }
+                    { mode: cmd.mode, floorOnly: cmd.floorOnly }
                 )
 
                 if (!placement) {

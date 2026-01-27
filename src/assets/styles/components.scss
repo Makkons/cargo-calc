@@ -1,0 +1,70 @@
+/* =========================
+   БАЗОВАЯ КАРТОЧКА
+========================= */
+
+.card {
+  padding: var(--spacing-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-card);
+  transition: background var(--transition-fast),
+              border-color var(--transition-fast);
+}
+
+.card:hover {
+  background: var(--color-bg-card-hover);
+  border-color: var(--color-border-hover);
+}
+
+.card--active {
+  background: #eef4ff;
+  border-color: var(--color-primary);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+}
+
+/* =========================
+   БАЗОВАЯ КНОПКА
+========================= */
+
+.btn {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: #fff;
+  cursor: pointer;
+  transition: background var(--transition-fast),
+              border-color var(--transition-fast);
+}
+
+.btn--icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+/* =========================
+   СЕКЦИЯ / ПАНЕЛЬ
+========================= */
+
+.panel {
+  padding: var(--spacing-xl);
+  background: #fff;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.04);
+}
+
+.panel__title {
+  margin: 0 0 var(--spacing-md);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}

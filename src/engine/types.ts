@@ -48,13 +48,3 @@ export type EngineState = {
     placements: Placement[]
 }
 
-export interface PackingInputItem {
-    templateId: string
-    width: number
-    length: number
-    height: number
-    fragile?: boolean
-    weight?: number
-    color?: string
-    name?: string
-}

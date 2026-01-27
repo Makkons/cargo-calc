@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { reactive, watch, toRaw } from 'vue'
+import { reactive, watch, toRaw, computed } from 'vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import type { CargoTemplate } from '@/data/templates/types'
 
 const props = defineProps<{
   open: boolean
   item?: CargoTemplate
+  showFragile?: boolean
   mode: 'create' | 'edit'
 }>()
 
@@ -25,11 +26,35 @@ const form = reactive<CargoTemplate>({
   fragile: false,
 })
 
+const touched = reactive({
+  name: false,
+  width: false,
+  length: false,
+  height: false,
+})
+
+const errors = computed(() => ({
+  name: touched.name && !form.name.trim() ? 'Введите название' : '',
+  width: touched.width && form.width <= 0 ? 'Введите ширину' : '',
+  length: touched.length && form.length <= 0 ? 'Введите длину' : '',
+  height: touched.height && form.height <= 0 ? 'Введите высоту' : '',
+}))
+
+const isValid = computed(() =>
+    form.name.trim() !== '' &&
+    form.width > 0 &&
+    form.length > 0 &&
+    form.height > 0
+)
+
 watch(
     () => props.item,
     (value) => {
+      // Сброс touched при открытии
+      Object.keys(touched).forEach(k => touched[k as keyof typeof touched] = false)
+
       if (value) {
-        Object.assign(form, { ...toRaw(value) }) // ✅ ВОТ ТУТ
+        Object.assign(form, { ...toRaw(value) })
       } else {
         Object.assign(form, {
           id: crypto.randomUUID(),
@@ -46,7 +71,15 @@ watch(
     { immediate: true }
 )
 
+function touchAll() {
+  Object.keys(touched).forEach(k => touched[k as keyof typeof touched] = true)
+}
+
 function save() {
+  touchAll()
+
+  if (!isValid.value) return
+
   if (props.mode === 'edit' && props.item) {
     const unchanged =
         form.width === props.item.width &&
@@ -69,31 +102,54 @@ function save() {
 </script>
 
 <template>
-  <BaseModal :open="open" @close="emit('close')">
+  <BaseModal :open="open" @close="emit('close')" @submit="save">
     <h3>{{ item ? 'Редактировать груз' : 'Новый груз' }}</h3>
 
     <label>
       Название
-      <input v-model="form.name" />
+      <input
+          v-model="form.name"
+          :class="{ 'input--error': errors.name }"
+          @blur="touched.name = true"
+      />
+      <span v-if="errors.name" class="field-error">{{ errors.name }}</span>
     </label>
 
     <label>
-      Ширина
-      <input type="number" v-model.number="form.width" />
+      Ширина (мм)
+      <input
+          type="number"
+          v-model.number="form.width"
+          :class="{ 'input--error': errors.width }"
+          @blur="touched.width = true"
+      />
+      <span v-if="errors.width" class="field-error">{{ errors.width }}</span>
     </label>
 
     <label>
-      Длина
-      <input type="number" v-model.number="form.length" />
+      Длина (мм)
+      <input
+          type="number"
+          v-model.number="form.length"
+          :class="{ 'input--error': errors.length }"
+          @blur="touched.length = true"
+      />
+      <span v-if="errors.length" class="field-error">{{ errors.length }}</span>
     </label>
 
     <label>
-      Высота
-      <input type="number" v-model.number="form.height" />
+      Высота (мм)
+      <input
+          type="number"
+          v-model.number="form.height"
+          :class="{ 'input--error': errors.height }"
+          @blur="touched.height = true"
+      />
+      <span v-if="errors.height" class="field-error">{{ errors.height }}</span>
     </label>
 
     <label>
-      Вес, кг
+      Вес (кг)
       <input type="number" v-model.number="form.weight" />
     </label>
 
@@ -102,28 +158,18 @@ function save() {
       <input type="color" v-model="form.color" />
     </label>
 
-    <label>
+    <label v-if="showFragile">
       <input type="checkbox" v-model="form.fragile" />
       Хрупкий (нельзя ставить сверху)
     </label>
 
-    <div class="actions">
-      <button @click="save">Сохранить</button>
+    <div class="modal__actions">
+      <button class="button--primary" @click="save">Сохранить</button>
       <button @click="emit('close')">Отмена</button>
     </div>
   </BaseModal>
 </template>
 
 <style scoped>
-label {
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 8px;
-}
-
-.actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
+/* Стили наследуются из BaseModal через :deep() */
 </style>

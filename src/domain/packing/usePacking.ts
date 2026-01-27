@@ -1,12 +1,29 @@
 import { shallowRef, ref, computed } from 'vue'
 import { PackingEngine } from '@/engine/PackingEngine'
 import { PackingCommandExecutor } from '@/engine/commands/PackingCommandExecutor'
-import type { Container, Placement, PlacementEdit, PackingInputItem } from '@/engine/types'
+import type { Container, Placement } from '@/engine/types'
 import type { CargoTemplate } from '@/data/templates/types'
 
 export type PackingMode = 'uniform' | 'dense'
 
-export function usePacking(container: Container, step = 50) {
+export interface UsePackingOptions {
+    step?: number
+    /** Размещать только на полу (для default режима) */
+    floorOnly?: boolean
+}
+
+export function usePacking(
+    container: Container,
+    options: UsePackingOptions | number = {}
+) {
+    // Обратная совместимость: если передано число — это step
+    const opts = typeof options === 'number'
+        ? { step: options, floorOnly: false }
+        : options
+
+    const step = opts.step ?? 50
+    const floorOnly = ref(opts.floorOnly ?? false)
+
     /* =========================
        ENGINE
     ========================= */
@@ -26,6 +43,9 @@ export function usePacking(container: Container, step = 50) {
     const containerVolume =
         container.width * container.length * container.height
 
+    const containerFloorArea =
+        container.width * container.length
+
     const usedVolume = computed(() =>
         placements.value.reduce(
             (sum, p) => sum + p.width * p.length * p.height,
@@ -33,9 +53,21 @@ export function usePacking(container: Container, step = 50) {
         )
     )
 
+    const usedFloorArea = computed(() =>
+        placements.value.reduce(
+            (sum, p) => sum + p.width * p.length,
+            0
+        )
+    )
+
     const volumeFill = computed(() => {
         const v = containerVolume === 0 ? 0 : Math.min(usedVolume.value / containerVolume, 1)
         return v
+    })
+
+    const floorFill = computed(() => {
+        const f = containerFloorArea === 0 ? 0 : Math.min(usedFloorArea.value / containerFloorArea, 1)
+        return f
     })
 
     const usedWeight = computed(() => {
@@ -52,16 +84,41 @@ export function usePacking(container: Container, step = 50) {
         placements.value = engine.value.getPlacements().map(p => ({ ...p }))
     }
 
-    function resetEngine() {
-        engine.value = new PackingEngine(container, step)
+    function resetContainer(newContainer: Container) {
+        engine.value = new PackingEngine(newContainer, step)
         executor.value = new PackingCommandExecutor(engine.value)
         sync()
     }
 
-    function resetContainer(container: Container) {
-        engine.value = new PackingEngine(container, step)
-        executor.value = new PackingCommandExecutor(engine.value)
-        sync()
+    /** Внутренний helper для добавления груза */
+    function executeAddItem(item: {
+        templateId?: string
+        name: string
+        color: string
+        weight?: number
+        width: number
+        length: number
+        height: number
+        fragile: boolean
+    }): boolean {
+        const res = executor.value.execute({
+            type: 'addItem',
+            template: {
+                id: crypto.randomUUID(),
+                templateId: item.templateId,
+                name: item.name,
+                color: item.color,
+                weight: item.weight,
+                width: item.width,
+                length: item.length,
+                height: item.height,
+                fragile: item.fragile,
+            },
+            mode: mode.value,
+            floorOnly: floorOnly.value,
+        })
+        if (res.ok) sync()
+        return res.ok
     }
 
     /* =========================
@@ -69,46 +126,53 @@ export function usePacking(container: Container, step = 50) {
     ========================= */
 
     function addFromTemplate(template: CargoTemplate): boolean {
-        const res = executor.value.execute({
-            type: 'addItem',
-            template: {
-                id: crypto.randomUUID(),
-                templateId: template.id,
-
-                name: template.name,
-                color: template.color,
-                weight: typeof template.weight === 'number' ? template.weight : undefined,
-
-                width: template.width,
-                length: template.length,
-                height: template.height,
-                fragile: template.fragile,
-            },
-            mode: mode.value,
+        return executeAddItem({
+            templateId: template.id,
+            name: template.name,
+            color: template.color,
+            weight: template.weight,
+            width: template.width,
+            length: template.length,
+            height: template.height,
+            fragile: template.fragile,
         })
-
-        if (res.ok) sync()
-        return res.ok
     }
 
-    function addCustomItem(template: CargoTemplate): boolean {
-        const res = executor.value.execute({
-            type: 'addItem',
-            template: {
+    /** Добавление груза из шаблона в конкретную позицию */
+    function addFromTemplateAt(template: CargoTemplate, x: number, y: number): boolean {
+        const placement = engine.value.addItemAt(
+            {
                 id: crypto.randomUUID(),
-                // ❌ templateId отсутствует
+                templateId: template.id,
+                name: template.name,
+                color: template.color,
+                weight: template.weight,
                 width: template.width,
                 length: template.length,
                 height: template.height,
                 fragile: template.fragile,
-                weight: template.weight,
-                color: template.color,
-                name: template.name,
             },
-            mode: mode.value,
-        })
-        if (res.ok) sync()
-        return res.ok
+            x,
+            y
+        )
+
+        if (placement) {
+            sync()
+            return true
+        }
+        return false
+    }
+
+    function addCustomItem(item: {
+        name: string
+        color: string
+        weight?: number
+        width: number
+        length: number
+        height: number
+        fragile: boolean
+    }): boolean {
+        return executeAddItem(item)
     }
 
     function removePlacement(id: string): boolean {
@@ -148,6 +212,7 @@ export function usePacking(container: Container, step = 50) {
                 fragile: patch.fragile ?? old.fragile,
             },
             mode: mode.value,
+            floorOnly: floorOnly.value,
         })
 
         sync()
@@ -155,9 +220,9 @@ export function usePacking(container: Container, step = 50) {
     }
 
     function optimize(): boolean {
-        // 1. Сохраняем ЛОГИЧЕСКИЕ грузы (не placements)
+        // 1. Сохраняем грузы
         const items = engine.value.getPlacements().map(p => ({
-            templateId: p.templateId!,
+            templateId: p.templateId,
             width: p.width,
             length: p.length,
             height: p.height,
@@ -167,7 +232,7 @@ export function usePacking(container: Container, step = 50) {
             name: p.name,
         }))
 
-        // 2. Полностью пересоздаём engine и executor
+        // 2. Пересоздаём engine
         engine.value = new PackingEngine(container, step)
         executor.value = new PackingCommandExecutor(engine.value)
 
@@ -176,19 +241,18 @@ export function usePacking(container: Container, step = 50) {
             const res = executor.value.execute({
                 type: 'addItem',
                 template: {
-                    id: crypto.randomUUID(), // 🔥 новый placement
+                    id: crypto.randomUUID(),
                     ...item,
                 },
                 mode: mode.value,
+                floorOnly: floorOnly.value,
             })
 
             if (!res.ok) {
                 console.warn('[optimize] item skipped:', item)
-                // v1: просто пропускаем, позже можно улучшить
             }
         }
 
-        // 4. Синхронизируем UI
         sync()
         return true
     }
@@ -218,14 +282,14 @@ export function usePacking(container: Container, step = 50) {
 
         if (!removed) return false
 
-        // 2. добавляем повернутый
+        // 2. добавляем повернутый (swap width/length)
         const added = executor.value.execute({
             type: 'addItem',
             template: {
                 id: crypto.randomUUID(),
-                templateId: p.templateId!,
-                width: p.length,        // 🔁 swap
-                length: p.width,        // 🔁 swap
+                templateId: p.templateId,
+                width: p.length,
+                length: p.width,
                 height: p.height,
                 fragile: p.fragile,
                 weight: p.weight,
@@ -233,6 +297,7 @@ export function usePacking(container: Container, step = 50) {
                 name: p.name,
             },
             mode: mode.value,
+            floorOnly: floorOnly.value,
         }).ok
 
         // 3. если не влез — откат
@@ -241,7 +306,7 @@ export function usePacking(container: Container, step = 50) {
                 type: 'addItem',
                 template: {
                     id: crypto.randomUUID(),
-                    templateId: p.templateId!,
+                    templateId: p.templateId,
                     width: p.width,
                     length: p.length,
                     height: p.height,
@@ -251,6 +316,7 @@ export function usePacking(container: Container, step = 50) {
                     name: p.name,
                 },
                 mode: mode.value,
+                floorOnly: floorOnly.value,
             })
             sync()
             return false
@@ -268,6 +334,10 @@ export function usePacking(container: Container, step = 50) {
         mode.value = next
     }
 
+    function setFloorOnly(value: boolean) {
+        floorOnly.value = value
+    }
+
     /* =========================
        INIT
     ========================= */
@@ -277,18 +347,23 @@ export function usePacking(container: Container, step = 50) {
     return {
         placements,
         mode,
+        floorOnly,
 
         // stats
         usedVolume,
         volumeFill,
+        usedFloorArea,
+        floorFill,
         usedWeight,
 
         // actions
         addFromTemplate,
+        addFromTemplateAt,
         removePlacement,
         editPlacement,
         optimize,
         setMode,
+        setFloorOnly,
         canModify,
         rotatePlacement,
         addCustomItem,

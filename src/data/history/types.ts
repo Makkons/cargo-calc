@@ -1,4 +1,3 @@
-// src/data/history/types.ts
 import type { Placement, Container } from '@/engine/types'
 import type { PackingMode } from '@/domain/packing/usePacking'
 
@@ -16,5 +15,3 @@ export type PackingHistoryItem = {
     placements: Placement[]
     mode: PackingMode
 }
-
-export const PACKING_HISTORY_KEY = 'packing-history'

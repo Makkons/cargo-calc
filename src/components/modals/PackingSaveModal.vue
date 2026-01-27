@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import {reactive, ref, watch, nextTick} from 'vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 
 const props = defineProps<{
@@ -22,13 +22,21 @@ const form = reactive({
   shippingDate: '',
 })
 
+function getTodayDateInputValue(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 watch(
     () => props.open,
     open => {
       if (open) {
         form.title = ''
         form.comment = ''
-        form.shippingDate = ''
+        form.shippingDate = getTodayDateInputValue()
       }
     }
 )
@@ -62,7 +70,7 @@ function save() {
       <input type="date" v-model="form.shippingDate" />
     </label>
 
-    <div class="actions">
+    <div class="modal__actions">
       <button @click="save">Сохранить</button>
       <button @click="emit('close')">Отмена</button>
     </div>

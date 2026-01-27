@@ -5,34 +5,61 @@ import CargoModal from '@/components/modals/CargoModal.vue'
 import CargoPreview from '@/components/ui/CargoPreview.vue'
 import type { CargoTemplate } from '@/data/templates/types'
 import PackingSaveModal from '@/components/modals/PackingSaveModal.vue'
+import { useHighlightedPlacement } from '@/composables/useHighlightedPlacement'
+
+const { highlightedId, setHighlighted } = useHighlightedPlacement()
 
 type PackingMode = 'uniform' | 'dense'
 
-const props = defineProps<{
-  title: string
-  comment?: string
-  shippingDate?: string
+const emit = defineEmits<{
+  (e: 'open-history'): void
+}>()
 
-  placements: Placement[]
-  canRemove: (id: string) => boolean
-  mode: PackingMode
-
-  onRotate: (id: string) => void
-  onSetMode: (mode: PackingMode) => void
-  onRemove: (id: string) => void
-  onEdit: (id: string, patch: Partial<Placement>) => void
-  onOptimize: () => void
-  onAddCustom: (template: CargoTemplate) => void
-
-  volumeFill: number
-  usedWeight: number
-
-  onSave: (meta: {
+const props = withDefaults(
+  defineProps<{
     title: string
     comment?: string
     shippingDate?: string
-  }) => void
-}>()
+
+    placements: Placement[]
+    canRemove: (id: string) => boolean
+    mode: PackingMode
+
+    /** Pro режим приложения */
+    isProMode?: boolean
+
+    showModeSwitch?: boolean
+    showOptimize?: boolean
+    showAddCargo?: boolean
+
+    onRotate: (id: string) => void
+    onSetMode: (mode: PackingMode) => void
+    onRemove: (id: string) => void
+    onEdit: (id: string, patch: Partial<Placement>) => void
+    onOptimize: () => void
+    onAddCustom: (template: CargoTemplate) => void
+    onExportPdf: () => void
+
+    /** Заполнение по объёму (для pro режима) */
+    volumeFill: number
+    /** Заполнение по площади пола (для default режима) */
+    floorFill?: number
+    usedWeight: number
+
+    onSave: (meta: {
+      title: string
+      comment?: string
+      shippingDate?: string
+    }) => void
+  }>(),
+  {
+    isProMode: false,
+    showModeSwitch: true,
+    showOptimize: true,
+    showAddCargo: false,
+    floorFill: 0,
+  }
+)
 
 const showEditModal = ref(false)
 const showCreateModal = ref(false)
@@ -67,62 +94,87 @@ function saveEdited(patch: Placement) {
   showEditModal.value = false
   editingPlacementId.value = null
 }
+
+/** Текущее заполнение — объём для pro, площадь для default */
+const currentFill = computed(() =>
+    props.isProMode ? props.volumeFill : props.floorFill
+)
+
+const fillLabel = computed(() =>
+    props.isProMode ? 'Объём' : 'Площадь'
+)
 </script>
 
 <template>
   <div class="packing-list">
-    <h2>{{ title }}</h2>
+    <h2 class="packing-list__title">{{ title }}</h2>
 
-    <p v-if="comment">{{ comment }}</p>
-    <p v-if="shippingDate">Отгрузка: {{ shippingDate }}</p>
+    <p v-if="comment" class="packing-list__subtitle">{{ comment }}</p>
+    <p v-if="shippingDate" class="packing-list__subtitle">Отгрузка: {{ shippingDate }}</p>
 
-    <div class="status">
-      <div class="bar">
-        <div class="bar-fill" :style="{ width: Math.round(volumeFill * 100) + '%' }" />
+    <div class="packing-list__status">
+      <div class="packing-list__bar">
+        <div class="packing-list__bar-fill" :style="{ width: Math.round(currentFill * 100) + '%' }" />
       </div>
-      <div class="labels">
-        <span>Объём: {{ Math.round(volumeFill * 100) }}%</span>
+      <div class="packing-list__labels">
+        <span>{{ fillLabel }}: {{ Math.round(currentFill * 100) }}%</span>
         <span v-if="usedWeight > 0">Вес: {{ usedWeight }} кг</span>
       </div>
     </div>
 
-    <div class="actions">
-      <div class="mode-switch">
-        <button :class="{ active: mode === 'uniform' }" @click="props.onSetMode('uniform')">
+    <div class="packing-list__actions">
+      <div v-if="showModeSwitch" class="packing-list__mode-switch">
+        <button
+            :class="{ 'packing-list__mode-btn--active': mode === 'uniform' }"
+            @click="props.onSetMode('uniform')"
+        >
           Равномерно
         </button>
-        <button :class="{ active: mode === 'dense' }" @click="props.onSetMode('dense')">
+        <button
+            :class="{ 'packing-list__mode-btn--active': mode === 'dense' }"
+            @click="props.onSetMode('dense')"
+        >
           Плотно
         </button>
       </div>
 
-      <button @click="showCreateModal = true">＋ Добавить груз</button>
-      <button @click="props.onOptimize" :disabled="placements.length === 0">🔄 Оптимизировать</button>
-      <button :disabled="placements.length === 0">
+      <button v-if="showAddCargo" class="packing-list__action-btn" @click="showCreateModal = true">＋ Добавить груз</button>
+      <button v-if="showOptimize" class="packing-list__action-btn" @click="props.onOptimize" :disabled="placements.length === 0">🔄 Оптимизировать</button>
+      <button class="packing-list__action-btn" @click="showSaveModal = true" :disabled="placements.length === 0">
         💾 Сохранить
       </button>
-      <button @click="showSaveModal = true" :disabled="placements.length === 0">
+      <button class="packing-list__action-btn" :disabled="placements.length === 0" @click="props.onExportPdf">
         📄 Выгрузить в PDF
+      </button>
+      <button class="packing-list__action-btn" @click="emit('open-history')">
+        📋 История
       </button>
     </div>
 
-    <div v-if="placements.length === 0" class="empty">
+    <div v-if="placements.length === 0" class="packing-list__empty">
       Грузы не добавлены
     </div>
 
-    <div v-for="p in placements" :key="p.id" class="packing-item">
-      <div class="info">
-        <strong>{{ p.name || 'Груз' }}</strong>
-        <div class="size">{{ p.width }} × {{ p.length }} × {{ p.height }}</div>
-        <div v-if="p.weight != null" class="weight">{{ p.weight }} кг</div>
+    <div
+        v-for="p in placements"
+        :key="p.id"
+        class="packing-item"
+        :class="{ 'packing-item--highlighted': highlightedId === p.id }"
+        @mouseenter="setHighlighted(p.id)"
+        @mouseleave="setHighlighted(null)"
+    >
+      <div class="packing-item__info">
+        <strong class="packing-item__name">{{ p.name || 'Груз' }}</strong>
+        <div class="packing-item__size">{{ p.width }} × {{ p.length }} × {{ p.height }}</div>
+        <div v-if="p.weight != null" class="packing-item__weight">{{ p.weight }} кг</div>
       </div>
 
       <CargoPreview :width="p.width" :length="p.length" :color="p.color" />
 
-      <div class="controls">
-        <button @click="openEdit(p)" :disabled="!canRemove(p.id)">✏️</button>
-        <button @click="props.onRotate(p.id)" :disabled="!canRemove(p.id)">🔄</button>
-        <button @click="props.onRemove(p.id)" :disabled="!canRemove(p.id)">✕</button>
+      <div class="packing-item__controls">
+        <button class="packing-item__btn" @click="openEdit(p)" :disabled="!canRemove(p.id)">✏️</button>
+        <button class="packing-item__btn packing-item__btn--rotate" @click="props.onRotate(p.id)" :disabled="!canRemove(p.id)">↻</button>
+        <button class="packing-item__btn packing-item__btn--danger" @click="props.onRemove(p.id)" :disabled="!canRemove(p.id)">✕</button>
       </div>
     </div>
 
@@ -153,186 +205,217 @@ function saveEdited(patch: Placement) {
   </div>
 </template>
 
-<style scoped>
+<style scoped lang="scss">
+/* ===== Panel ===== */
+
 .packing-list {
-  padding: 20px;
-  border-radius: 12px;
+  padding: var(--spacing-xl, 20px);
+  border-radius: var(--radius-xl, 12px);
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--color-border, #e5e7eb);
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.04);
 }
 
 /* ===== Header ===== */
 
-.packing-list h2 {
-  margin: 0 0 6px;
+.packing-list__title {
+  margin: 0 0 var(--spacing-xs, 4px);
   font-size: 18px;
   font-weight: 600;
-  color: #111827;
+  color: var(--color-text-primary, #111827);
 }
 
-.packing-list p {
+.packing-list__subtitle {
   margin: 0;
   font-size: 13px;
-  color: #4b5563;
+  color: var(--color-text-secondary, #6b7280);
 }
 
 /* ===== Status ===== */
 
-.status {
+.packing-list__status {
   margin: 14px 0 18px;
 }
 
-.bar {
+.packing-list__bar {
   height: 8px;
-  background: #e5e7eb;
+  background: var(--color-border, #e5e7eb);
   border-radius: 999px;
   overflow: hidden;
 }
 
-.bar-fill {
+.packing-list__bar-fill {
   height: 100%;
   background: linear-gradient(90deg, #4caf50, #66bb6a);
   transition: width 0.25s ease;
 }
 
-.labels {
+.packing-list__labels {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: #6b7280;
-  margin-top: 6px;
+  color: var(--color-text-secondary, #6b7280);
+  margin-top: var(--spacing-xs, 4px);
 }
 
 /* ===== Actions ===== */
 
-.actions {
+.packing-list__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--spacing-sm, 8px);
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-lg, 16px);
 }
 
-.actions button {
-  padding: 6px 12px;
+.packing-list__action-btn {
+  padding: var(--spacing-xs, 4px) var(--spacing-md, 12px);
   font-size: 13px;
-  border-radius: 8px;
-  border: 1px solid #d1d5db;
-  background: #f9fafb;
-  color: #111827;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border-hover, #d1d5db);
+  background: var(--color-bg-card-hover, #f9fafb);
+  color: var(--color-text-primary, #111827);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--transition-fast, 0.15s ease),
+              border-color var(--transition-fast, 0.15s ease);
 }
 
-.actions button:hover:not(:disabled) {
+.packing-list__action-btn:hover:not(:disabled) {
   background: #f3f4f6;
   border-color: #9ca3af;
 }
 
-.actions button:disabled {
+.packing-list__action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
 /* ===== Mode Switch ===== */
 
-.mode-switch {
+.packing-list__mode-switch {
   display: flex;
-  border-radius: 8px;
+  border-radius: var(--radius-md, 8px);
   overflow: hidden;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--color-border-hover, #d1d5db);
 }
 
-.mode-switch button {
-  padding: 6px 14px;
+.packing-list__mode-switch button {
+  padding: var(--spacing-xs, 4px) 14px;
   font-size: 12px;
-  background: #f9fafb;
+  background: var(--color-bg-card-hover, #f9fafb);
   border: none;
   cursor: pointer;
   color: #374151;
+  transition: background var(--transition-fast, 0.15s ease);
 }
 
-.mode-switch button.active {
-  background: #2563eb;
-  color: #ffffff;
+.packing-list__mode-btn--active {
+  background: var(--color-primary, #2563eb) !important;
+  color: #ffffff !important;
 }
-.mode-switch button.active:hover {
-  background: #174fca;
+
+.packing-list__mode-btn--active:hover {
+  background: var(--color-primary-hover, #1d4ed8) !important;
 }
 
 /* ===== Empty ===== */
 
-.empty {
+.packing-list__empty {
   font-size: 13px;
-  color: #9ca3af;
-  padding: 12px 0;
+  color: var(--color-text-muted, #9ca3af);
+  padding: var(--spacing-md, 12px) 0;
 }
 
-/* ===== Items ===== */
+/* ===== Items (Card) ===== */
 
 .packing-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 10px;
-  border: 1px solid #e5e7eb;
-  margin-bottom: 8px;
-  background: #fafafa;
-  transition: background 0.15s, border-color 0.15s;
+  gap: var(--spacing-md, 12px);
+
+  padding: var(--spacing-md, 12px);
+  margin-bottom: var(--spacing-sm, 8px);
+
+  border-radius: var(--radius-lg, 10px);
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-bg-card, #fafafa);
+
+  transition: background var(--transition-fast, 0.15s ease),
+              border-color var(--transition-fast, 0.15s ease);
 }
 
 .packing-item:hover {
-  background: #f9fafb;
-  border-color: #d1d5db;
+  background: var(--color-bg-card-hover, #f9fafb);
+  border-color: var(--color-border-hover, #d1d5db);
 }
 
-.info {
+.packing-item--highlighted {
+  background: #fef3c7 !important;
+  border-color: #fbbf24 !important;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
+}
+
+.packing-item__info {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs, 4px);
 }
 
-.info strong {
+.packing-item__name {
   font-size: 14px;
   font-weight: 500;
-  color: #111827;
+  color: var(--color-text-primary, #111827);
 }
 
-.size {
+.packing-item__size {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--color-text-secondary, #6b7280);
 }
 
-.weight {
+.packing-item__weight {
   font-size: 12px;
   color: #374151;
 }
 
 /* ===== Controls ===== */
 
-.controls {
+.packing-item__controls {
   display: flex;
-  gap: 6px;
+  gap: var(--spacing-xs, 4px);
 }
 
-.controls button {
+.packing-item__btn {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  border: 1px solid #d1d5db;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border-hover, #d1d5db);
   background: #ffffff;
   cursor: pointer;
   font-size: 14px;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.controls button:hover:not(:disabled) {
-  background: #f3f4f6;
-  border-color: #9ca3af;
-}
-
-.controls button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  transition: background var(--transition-fast, 0.15s ease),
+              border-color var(--transition-fast, 0.15s ease);
+  &:hover:not(:disabled) {
+    background: #f3f4f6;
+    border-color: #9ca3af;
+  }
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  &--danger:hover:not(:disabled) {
+    background: #fee2e2;
+    border-color: #fca5a5;
+    color: #b91c1c;
+  }
+  &--rotate {
+    background: #f0f9ff;
+    border-color: #bae6fd;
+    color: #0369a1;
+    &:hover:not(:disabled) {
+      background: #e0f2fe;
+      border-color: #7dd3fc;
+    }
+  }
 }
 </style>

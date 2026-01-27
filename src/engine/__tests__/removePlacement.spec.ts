@@ -8,11 +8,8 @@ const container: Container = {
     height: 100
 }
 
-const box: ItemTemplate = {
-    id: 'box',
-    width: 50,
-    length: 50,
-    height: 20
+function createBox(id: string): ItemTemplate {
+    return { id, width: 50, length: 50, height: 20 }
 }
 
 describe('PackingEngine.removePlacement', () => {
@@ -20,7 +17,7 @@ describe('PackingEngine.removePlacement', () => {
     it('removes single top-level placement', () => {
         const engine = new PackingEngine(container)
 
-        const p = engine.addItem(box, { mode: 'uniform' })
+        const p = engine.addItem(createBox('box-1'), { mode: 'uniform' })
         expect(engine.getPlacements().length).toBe(1)
 
         const result = engine.removePlacement(p!.id)
@@ -32,8 +29,8 @@ describe('PackingEngine.removePlacement', () => {
     it('does not remove placement if something is above it', () => {
         const engine = new PackingEngine(container)
 
-        const bottom = engine.addItem(box, { mode: 'dense' })!
-        const top = engine.addItem(box, { mode: 'dense' })!
+        const bottom = engine.addItem(createBox('bottom'), { mode: 'dense' })!
+        const top = engine.addItem(createBox('top'), { mode: 'dense' })!
 
         expect(bottom.z).toBe(0)
         expect(top.z).toBe(20)
@@ -47,8 +44,8 @@ describe('PackingEngine.removePlacement', () => {
     it('allows removing top placement while keeping bottom', () => {
         const engine = new PackingEngine(container)
 
-        const bottom = engine.addItem(box, { mode: 'dense' })!
-        const top = engine.addItem(box, { mode: 'dense' })!
+        const bottom = engine.addItem(createBox('bottom'), { mode: 'dense' })!
+        const top = engine.addItem(createBox('top'), { mode: 'dense' })!
 
         const result = engine.removePlacement(top.id)
 

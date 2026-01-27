@@ -4,6 +4,8 @@ export type AddItemCommand = {
     type: 'addItem'
     template: ItemTemplate
     mode: 'uniform' | 'dense'
+    /** Размещать только на полу (z = 0) */
+    floorOnly?: boolean
 }
 
 export type RemovePlacementCommand = {

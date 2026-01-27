@@ -9,6 +9,8 @@ import { scoreUniform, scoreDense } from './scoring'
 
 type FindPlacementOptions = {
     mode: 'uniform' | 'dense'
+    /** Искать размещение только на полу (z = 0) */
+    floorOnly?: boolean
 }
 
 export class PackingEngine {
@@ -70,48 +72,96 @@ export class PackingEngine {
     }
 
     /**
-     * 🔍 Поиск оптимального размещения
+     * 🎯 Генерация кандидатных позиций для размещения
+     *
+     * Вместо перебора всех позиций O(W×L) генерируем только "интересные" точки:
+     * - (0, 0) — угол контейнера
+     * - Справа от каждого груза: (p.x + p.width, p.y)
+     * - Снизу от каждого груза: (p.x, p.y + p.length)
+     *
+     * Это сокращает количество проверок с тысяч до десятков.
+     */
+    private getCandidatePositions(template: ItemTemplate): Array<{ x: number; y: number }> {
+        const candidates = new Map<string, { x: number; y: number }>()
+
+        const addCandidate = (x: number, y: number) => {
+            // Snap к сетке
+            const sx = Math.round(x / this.step) * this.step
+            const sy = Math.round(y / this.step) * this.step
+
+            // Проверяем границы с учётом размеров груза
+            if (sx < 0 || sy < 0) return
+            if (sx + template.width > this.container.width) return
+            if (sy + template.length > this.container.length) return
+
+            const key = `${sx},${sy}`
+            if (!candidates.has(key)) {
+                candidates.set(key, { x: sx, y: sy })
+            }
+        }
+
+        // Базовая позиция — угол контейнера
+        addCandidate(0, 0)
+
+        // Кандидаты от существующих грузов
+        for (const p of this.placements) {
+            // Справа от груза
+            addCandidate(p.x + p.width, p.y)
+
+            // Снизу от груза
+            addCandidate(p.x, p.y + p.length)
+
+            // Диагональ (полезно для заполнения углов)
+            addCandidate(p.x + p.width, p.y + p.length)
+
+            // Выравнивание по левому краю груза (для стекинга)
+            addCandidate(p.x, p.y)
+        }
+
+        return Array.from(candidates.values())
+    }
+
+    /**
+     * 🔍 Поиск оптимального размещения (оптимизированный)
+     *
+     * Использует кандидатные точки вместо полного перебора.
+     * Сложность: O(N) вместо O(W×L), где N — число размещений.
      */
     findPlacement(
         template: ItemTemplate,
         options: FindPlacementOptions = { mode: 'uniform' }
     ): Placement | null {
+        const candidates = this.getCandidatePositions(template)
+
         let best: Placement | null = null
         let bestScore: number | null = null
 
-        for (
-            let x = 0;
-            x <= this.container.width - template.width;
-            x += this.step
-        ) {
-            for (
-                let y = 0;
-                y <= this.container.length - template.length;
-                y += this.step
-            ) {
-                const z = this.canPlaceAt(template, x, y)
-                if (z === null) continue
+        for (const { x, y } of candidates) {
+            const z = this.canPlaceAt(template, x, y)
+            if (z === null) continue
 
-                const cells = this.heightMap.getCells(x, y, template.width, template.length)
+            // В режиме floorOnly размещаем только на полу
+            if (options.floorOnly && z !== 0) continue
 
-                const score =
-                    options.mode === 'uniform'
-                        ? scoreUniform(cells, z)
-                        : scoreDense(cells, z)
+            const cells = this.heightMap.getCells(x, y, template.width, template.length)
 
-                if (best === null || score < bestScore!) {
-                    bestScore = score
-                    best = {
-                        id: crypto.randomUUID(),
-                        templateId: template.templateId,
-                        x,
-                        y,
-                        z,
-                        width: template.width,
-                        length: template.length,
-                        height: template.height,
-                        fragile: template.fragile
-                    }
+            const score =
+                options.mode === 'uniform'
+                    ? scoreUniform(cells, z)
+                    : scoreDense(cells, z)
+
+            if (best === null || score < bestScore!) {
+                bestScore = score
+                best = {
+                    id: crypto.randomUUID(),
+                    templateId: template.templateId,
+                    x,
+                    y,
+                    z,
+                    width: template.width,
+                    length: template.length,
+                    height: template.height,
+                    fragile: template.fragile
                 }
             }
         }
@@ -132,21 +182,35 @@ export class PackingEngine {
         return this.placements
     }
 
-    debugSnapshot(): number[][] {
-        return this.heightMap.snapshot()
-    }
-
     /**
      * ➕ Высокоуровневое добавление груза
      * findPlacement → applyPlacement
      */
     addItem(
         template: ItemTemplate,
-        options: { mode: 'uniform' | 'dense' }
+        options: { mode: 'uniform' | 'dense'; floorOnly?: boolean }
     ): Placement | null {
         const pos = this.findPlacement(template, options)
 
         if (!pos) {
+            return null
+        }
+
+        return this.addItemAt(template, pos.x, pos.y)
+    }
+
+    /**
+     * ➕ Добавление груза в конкретную позицию (x, y)
+     * z вычисляется автоматически
+     */
+    addItemAt(
+        template: ItemTemplate,
+        x: number,
+        y: number
+    ): Placement | null {
+        const z = this.canPlaceAt(template, x, y)
+
+        if (z === null) {
             return null
         }
 
@@ -155,7 +219,7 @@ export class PackingEngine {
             id: template.id,
             templateId: template.templateId,
 
-            // метаданные — 🔥 КЛЮЧЕВО
+            // метаданные
             name: template.name,
             color: template.color,
             weight: template.weight,
@@ -166,9 +230,9 @@ export class PackingEngine {
             height: template.height,
 
             // позиция
-            x: pos.x,
-            y: pos.y,
-            z: pos.z,
+            x,
+            y,
+            z,
 
             // флаги
             fragile: template.fragile,
@@ -207,10 +271,6 @@ export class PackingEngine {
         return true
     }
 
-    /**
-     * ↔️ Перемещение груза (v1)
-     * Можно перемещать ТОЛЬКО верхний груз
-     */
     /**
      * ↔️ Перемещение груза (v1)
      * Можно перемещать ТОЛЬКО верхний груз
@@ -313,7 +373,9 @@ export class PackingEngine {
      * Проверяет, лежит ли на этом грузе что-то ещё
      */
     private hasItemsAbove(id: string): boolean {
-        return this.heightMap.hasPlacementAbove(id)
+        const placement = this.getPlacementById(id)
+        if (!placement) return false
+        return this.heightMap.hasPlacementAbove(placement)
     }
 
     private getPlacementById(id: string): Placement | null {
