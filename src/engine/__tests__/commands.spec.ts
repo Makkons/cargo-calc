@@ -30,8 +30,8 @@ describe('PackingCommandExecutor', () => {
 
         expect(res.ok).toBe(true)
         if (res.ok) {
-            expect(res.placement).toBeDefined()
-            expect(res.placement!.width).toBe(50)
+            expect(res.value.placement).toBeDefined()
+            expect(res.value.placement!.width).toBe(50)
         }
         expect(engine.getPlacements().length).toBe(1)
     })
@@ -57,7 +57,8 @@ describe('PackingCommandExecutor', () => {
 
         expect(res.ok).toBe(false)
         if (!res.ok) {
-            expect(res.reason).toBeDefined()
+            expect(res.error).toBeDefined()
+            expect(res.error).toBe('no_space')
         }
     })
 

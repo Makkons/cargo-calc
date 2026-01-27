@@ -1,13 +1,21 @@
 import type { PackingEngine } from '../PackingEngine'
 import type { PackingCommand } from './types'
-import type { CommandResult } from './result'
+import { ok, err, type CommandResult } from '../result'
 
+/**
+ * PackingCommandExecutor — выполняет команды над PackingEngine
+ *
+ * Паттерн Command: инкапсулирует операции в объекты команд.
+ * Преимущества:
+ * - Единый интерфейс для всех операций
+ * - Типизированные результаты с ошибками
+ * - Легко добавить логирование, отмену, повтор
+ */
 export class PackingCommandExecutor {
     constructor(private engine: PackingEngine) {}
 
     execute(cmd: PackingCommand): CommandResult {
         switch (cmd.type) {
-
             case 'addItem': {
                 const placement = this.engine.addItem(
                     cmd.template,
@@ -15,48 +23,48 @@ export class PackingCommandExecutor {
                 )
 
                 if (!placement) {
-                    return { ok: false, reason: 'No space to place item' }
+                    return err('no_space')
                 }
 
-                return { ok: true, placement }
+                return ok({ placement })
             }
 
             case 'removePlacement': {
                 const success = this.engine.removePlacement(cmd.placementId)
                 if (!success) {
-                    return { ok: false, reason: 'Cannot remove placement' }
+                    return err('has_items_above')
                 }
-                return { ok: true }
+                return ok({})
             }
 
             case 'movePlacement': {
-                const success = this.engine.movePlacement(
+                const moved = this.engine.movePlacement(
                     cmd.placementId,
                     cmd.x,
                     cmd.y
                 )
-                if (!success) {
-                    return { ok: false, reason: 'Cannot move placement' }
+                if (!moved) {
+                    return err('no_space')
                 }
-                return { ok: true }
+                return ok({ placement: moved })
             }
 
             case 'undo': {
                 if (!this.engine.undo()) {
-                    return { ok: false, reason: 'Nothing to undo' }
+                    return err('nothing_to_undo')
                 }
-                return { ok: true }
+                return ok({})
             }
 
             case 'redo': {
                 if (!this.engine.redo()) {
-                    return { ok: false, reason: 'Nothing to redo' }
+                    return err('nothing_to_redo')
                 }
-                return { ok: true }
+                return ok({})
             }
 
             default:
-                return { ok: false, reason: 'Unknown command' }
+                return err('unknown_command')
         }
     }
 }

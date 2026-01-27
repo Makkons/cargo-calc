@@ -1,223 +1,164 @@
 <script setup lang="ts">
-import {ref, computed, watch, toRaw, onMounted} from 'vue'
+import { ref, watch, toRaw, onMounted } from 'vue'
 
 import CargoTemplates from '@/components/CargoTemplates.vue'
 import ContainerTemplates from '@/components/ContainerTemplates.vue'
 import PackingList from '@/components/PackingList.vue'
 import PackingScene3D from '@/components/PackingScene3D.vue'
+import PackingScene2D from '@/components/PackingScene2D.vue'
+import PackingHistory from '@/components/PackingHistory.vue'
+import AsideBar from '@/components/AsideBar.vue'
 import ToastContainer from '@/components/ui/ToastContainer.vue'
 import DragGhost from '@/components/ui/DragGhost.vue'
 
-import {usePacking} from '@/domain/packing/usePacking'
-import {useToast} from '@/composables/useToast'
-import {useContainerTemplates} from '@/composables/useContainerTemplates'
-import {usePackingHistory} from '@/composables/usePackingHistory'
+import { usePacking } from '@/domain/packing/usePacking'
+import { useToast } from '@/composables/useToast'
+import { useContainerManager } from '@/composables/useContainerManager'
+import { usePackingHistory } from '@/composables/usePackingHistory'
+import { usePackingSession } from '@/composables/usePackingSession'
 
-import {exportToPdf} from '@/utils/exportPdf'
+import { exportToPdf } from '@/utils/exportPdf'
 
-import type {CargoTemplate} from '@/data/templates/types'
-import type {ContainerTemplate} from '@/data/containers/types'
-import PackingScene2D from "@/components/PackingScene2D.vue"
+import type { CargoTemplate } from '@/data/templates/types'
+import type { PackingHistoryItem } from '@/data/history/types'
 
-import type {PackingHistoryItem} from '@/data/history/types'
-import PackingHistory from "@/components/PackingHistory.vue"
-import AsideBar from "@/components/AsideBar.vue";
+/* =========================
+   UI STATE
+========================= */
 
 const isAsideOpen = ref(false)
 const asideTab = ref<'history' | 'settings'>('history')
-
-/* =========================
-   MODE (default / pro)
-========================= */
-
 const isProMode = ref(false)
 const sceneRef = ref<InstanceType<typeof PackingScene2D> | null>(null)
 
 /* =========================
-   TOAST
+   CORE SERVICES
 ========================= */
 
 const toast = useToast()
 
-/* =========================
-   CONTAINERS
-========================= */
-
-const containerStore = useContainerTemplates()
-
-/* =========================
-   PACKING
-========================= */
-
 const packing = usePacking(
-    {width: 2400, length: 7200, height: 2000},
-    {step: 10, floorOnly: !isProMode.value}
+    { width: 2400, length: 7200, height: 2000 },
+    { step: 10, floorOnly: !isProMode.value }
 )
 
-// Синхронизируем floorOnly с isProMode
+const containers = useContainerManager({
+    onContainerChange: (container) => packing.resetContainer(container)
+})
+
+const history = usePackingHistory()
+const session = usePackingSession()
+
+/* =========================
+   MODE SYNC
+========================= */
+
 watch(isProMode, (isPro) => {
-  packing.setFloorOnly(!isPro)
+    packing.setFloorOnly(!isPro)
 })
 
 /* =========================
-   WATCH CONTAINER CHANGE
+   HISTORY OPERATIONS
 ========================= */
 
-function selectContainer(id: string) {
-  const next = containerStore.templates.value.find(c => c.id === id)
-  if (!next) return
+async function handleSave(meta: { title: string; comment?: string; shippingDate?: string }) {
+    if (!containers.active.value) return
 
-  containerStore.select(id)
-  packing.resetContainer(next.container)
+    const item = session.createHistoryItem({
+        meta,
+        container: containers.active.value.container,
+        placements: packing.placements.value,
+        mode: packing.mode.value,
+    })
+
+    await history.save(item)
+    session.updateFromSaved(item)
+
+    toast.success(`Погрузка "${item.title}" сохранена`)
+}
+
+function handleLoadFromHistory(item: PackingHistoryItem) {
+    session.loadFrom(item)
+
+    packing.resetContainer(item.container)
+    packing.setMode(item.mode)
+
+    for (const p of item.placements) {
+        packing.addCustomItem(p)
+    }
+
+    toast.info(`Загружена компоновка "${item.title}"`)
+}
+
+async function handleRemoveFromHistory(id: string) {
+    await history.remove(id)
+    session.detachIfMatches(id)
+    toast.warning('Погрузка удалена из истории')
 }
 
 /* =========================
-   CONTAINER CRUD
+   CARGO OPERATIONS
 ========================= */
 
-async function createContainer(t: ContainerTemplate) {
-  await containerStore.create(t)
-
-  if (!containerStore.activeId.value) {
-    selectContainer(t.id)
-  }
+function handleAddCargo(template: CargoTemplate) {
+    const success = packing.addFromTemplate(template)
+    showCargoResult(success, template.name)
 }
 
-async function updateContainer(t: ContainerTemplate) {
-  await containerStore.update(t)
-
-  if (t.id === containerStore.activeId.value) {
-    packing.resetContainer(t.container)
-  }
+function handleAddCustomCargo(template: CargoTemplate) {
+    const success = packing.addCustomItem(template)
+    showCargoResult(success, template.name)
 }
 
-async function removeContainer(id: string) {
-  const wasActive = containerStore.activeId.value === id
-  await containerStore.remove(id)
+function handleDropCargoAt(template: CargoTemplate, x: number, y: number): boolean {
+    const success = packing.addFromTemplateAt(template, x, y)
+    showCargoResult(success, template.name)
+    return success
+}
 
-  if (wasActive && containerStore.active.value) {
-    packing.resetContainer(containerStore.active.value.container)
-  }
+function showCargoResult(success: boolean, name: string) {
+    if (success) {
+        toast.success(`Груз "${name}" добавлен`)
+    } else {
+        toast.error('Нет места для груза')
+    }
 }
 
 /* =========================
-   HISTORY
+   PDF EXPORT
 ========================= */
-
-const historyStore = usePackingHistory()
-
-const currentPackingTitle = ref('Погрузка')
-const currentPackingComment = ref<string | undefined>(undefined)
-const currentShippingDate = ref<string | undefined>(undefined)
-const activeHistoryId = ref<string | null>(null)
-
-async function savePacking(meta: { title: string; comment?: string; shippingDate?: string }) {
-  // Преобразуем реактивные данные в обычные объекты
-  const rawPlacements = toRaw(packing.placements.value).map(p => ({...toRaw(p)}))
-  const rawContainer = {...toRaw(containerStore.active.value!.container)}
-
-  const item: PackingHistoryItem = {
-    id: crypto.randomUUID(),
-    title: meta.title,
-    comment: meta.comment,
-    shippingDate: meta.shippingDate,
-    savedAt: new Date().toISOString(),
-    container: rawContainer,
-    placements: rawPlacements,
-    mode: packing.mode.value,
-  }
-
-  await historyStore.save(item)
-
-  currentPackingTitle.value = item.title
-  currentPackingComment.value = item.comment
-  currentShippingDate.value = item.shippingDate
-  activeHistoryId.value = item.id
-
-  toast.success(`Погрузка "${item.title}" сохранена`)
-}
-
-function loadFromHistory(item: PackingHistoryItem) {
-  activeHistoryId.value = item.id
-  currentPackingTitle.value = item.title
-  currentPackingComment.value = item.comment
-  currentShippingDate.value = item.shippingDate
-
-  packing.resetContainer(item.container)
-  packing.setMode(item.mode)
-
-  for (const p of item.placements) {
-    packing.addCustomItem(p)
-  }
-
-  toast.info(`Загружена компоновка "${item.title}"`)
-}
-
-async function onRemoveFromHistory(id: string) {
-  await historyStore.remove(id)
-
-  if (activeHistoryId.value === id) {
-    activeHistoryId.value = null
-  }
-  toast.warning('Погрузка удалена из истории')
-}
 
 async function handleExportPdf() {
-  if (!sceneRef.value?.$el || !containerStore.active.value) return
+    if (!sceneRef.value?.$el || !containers.active.value) return
 
-  await toast.promise(
-    () => exportToPdf(sceneRef.value!.$el, {
-      title: currentPackingTitle.value,
-      comment: currentPackingComment.value,
-      shippingDate: currentShippingDate.value,
-      container: containerStore.active.value!.container,
-      placements: toRaw(packing.placements.value).map(p => ({...toRaw(p)})),
-      fill: isProMode.value ? packing.volumeFill.value : packing.floorFill.value,
-      fillLabel: isProMode.value ? 'Объём' : 'Площадь',
-      usedWeight: packing.usedWeight.value,
-    }),
-    {
-      loading: 'Создание PDF...',
-      success: 'PDF успешно создан',
-      error: 'Не удалось создать PDF',
-    }
-  ).catch(() => {
-    // Ошибка уже показана в toast
-  })
+    await toast.promise(
+        () => exportToPdf(sceneRef.value!.$el, {
+            title: session.title.value,
+            comment: session.comment.value,
+            shippingDate: session.shippingDate.value,
+            container: containers.active.value!.container,
+            placements: toRaw(packing.placements.value).map(p => ({ ...toRaw(p) })),
+            fill: isProMode.value ? packing.volumeFill.value : packing.floorFill.value,
+            fillLabel: isProMode.value ? 'Объём' : 'Площадь',
+            usedWeight: packing.usedWeight.value,
+        }),
+        {
+            loading: 'Создание PDF...',
+            success: 'PDF успешно создан',
+            error: 'Не удалось создать PDF',
+        }
+    ).catch(() => {
+        // Ошибка уже показана в toast
+    })
 }
 
 /* =========================
-   CARGO TEMPLATES
+   UI HELPERS
 ========================= */
 
-function onAddItemToPacking(template: CargoTemplate) {
-  if (!packing.addFromTemplate(template)) {
-    toast.error('Нет места для груза')
-  } else {
-    toast.success(`Груз "${template.name}" добавлен`)
-  }
-}
-
-function onAddCustomItem(template: CargoTemplate) {
-  if (!packing.addCustomItem(template)) {
-    toast.error('Нет места для груза')
-  } else {
-    toast.success(`Груз "${template.name}" добавлен`)
-  }
-}
-
-function onDropTemplateAt(template: CargoTemplate, x: number, y: number): boolean {
-  if (!packing.addFromTemplateAt(template, x, y)) {
-    toast.error('Невозможно разместить груз в этой позиции')
-    return false
-  }
-  toast.success(`Груз "${template.name}" добавлен`)
-  return true
-}
-
 function openHistory() {
-  asideTab.value = 'history'
-  isAsideOpen.value = true
+    asideTab.value = 'history'
+    isAsideOpen.value = true
 }
 
 /* =========================
@@ -225,21 +166,10 @@ function openHistory() {
 ========================= */
 
 onMounted(async () => {
-  await Promise.all([
-    containerStore.load(),
-    historyStore.load(),
-  ])
-
-  // Инициализируем packing с активным контейнером
-  if (containerStore.active.value) {
-    packing.resetContainer(containerStore.active.value.container)
-  }
-})
-
-watch(() => containerStore.active.value, (next) => {
-  if (next) {
-    packing.resetContainer(next.container)
-  }
+    await Promise.all([
+        containers.init(),
+        history.load(),
+    ])
 })
 </script>
 
@@ -248,14 +178,14 @@ watch(() => containerStore.active.value, (next) => {
 
     <div class="sections">
       <CargoTemplates
-          @add-to-packing="onAddItemToPacking"
+          @add-to-packing="handleAddCargo"
           :isProMode="isProMode"
       />
 
       <PackingList
-          :title="currentPackingTitle"
-          :comment="currentPackingComment"
-          :shippingDate="currentShippingDate"
+          :title="session.title.value"
+          :comment="session.comment.value"
+          :shippingDate="session.shippingDate.value"
           :placements="packing.placements.value"
           :mode="packing.mode.value"
           :isProMode="isProMode"
@@ -266,13 +196,13 @@ watch(() => containerStore.active.value, (next) => {
           :showModeSwitch="isProMode"
           :showOptimize="isProMode"
           :showAddCargo="isProMode"
-          :onSave="savePacking"
+          :onSave="handleSave"
           :onSetMode="packing.setMode"
           :onRotate="packing.rotatePlacement"
           :onRemove="packing.removePlacement"
           :onEdit="packing.editPlacement"
           :onOptimize="packing.optimize"
-          :onAddCustom="onAddCustomItem"
+          :onAddCustom="handleAddCustomCargo"
           :onExportPdf="handleExportPdf"
           @open-history="openHistory"
       />
@@ -280,20 +210,20 @@ watch(() => containerStore.active.value, (next) => {
 
     <div class="scenes">
       <PackingScene2D
-          v-if="containerStore.active.value"
+          v-if="containers.active.value"
           ref="sceneRef"
-          :container="containerStore.active.value.container"
+          :container="containers.active.value.container"
           :placements="packing.placements.value"
           :canModify="packing.canModify"
           :onMove="packing.movePlacement"
           :onRemove="packing.removePlacement"
           :onRotate="packing.rotatePlacement"
-          :onDropTemplate="onDropTemplateAt"
+          :onDropTemplate="handleDropCargoAt"
           :step="packing.step"
       />
       <PackingScene3D
-          v-if="isProMode && containerStore.active.value"
-          :container="containerStore.active.value.container"
+          v-if="isProMode && containers.active.value"
+          :container="containers.active.value.container"
           :placements="packing.placements.value"
       />
     </div>
@@ -306,19 +236,19 @@ watch(() => containerStore.active.value, (next) => {
     >
       <PackingHistory
           v-if="activeTab === 'history'"
-          :items="historyStore.items.value"
-          :activeId="activeHistoryId"
-          @load="loadFromHistory"
-          @remove="onRemoveFromHistory"
+          :items="history.items.value"
+          :activeId="session.activeId.value"
+          @load="handleLoadFromHistory"
+          @remove="handleRemoveFromHistory"
       />
       <ContainerTemplates
           v-if="activeTab === 'settings'"
-          :templates="containerStore.templates.value"
-          :activeId="containerStore.activeId.value"
-          @select="selectContainer"
-          @create="createContainer"
-          @update="updateContainer"
-          @remove="removeContainer"
+          :templates="containers.templates.value"
+          :activeId="containers.activeId.value"
+          @select="containers.select"
+          @create="containers.create"
+          @update="containers.update"
+          @remove="containers.remove"
       />
     </AsideBar>
 
@@ -334,14 +264,8 @@ watch(() => containerStore.active.value, (next) => {
   display: grid;
   gap: 16px;
   padding: var(--spacing-sm);
-
-  /* 🔹 Desktop grid: левая растягивается, правая (сцена) — по содержимому */
   grid-template-columns: 1fr auto;
 }
-
-/* =========================
-   TEMPLATES SECTION
-========================= */
 
 .sections {
   display: flex;
@@ -353,36 +277,16 @@ watch(() => containerStore.active.value, (next) => {
   box-sizing: border-box;
 }
 
-/* =========================
-   GRID AREAS
-========================= */
-
-
-/* =========================
-   SCENES (sticky, высота = viewport)
-========================= */
-
 .scenes {
   position: sticky;
   top: calc(var(--titlebar-height, 0px) + var(--spacing-sm));
   align-self: start;
-
-  /* Высота сцены = viewport минус отступы */
   --scene-height: calc(100vh - var(--titlebar-height, 0px) - var(--spacing-sm) * 2);
-}
-
-/* Сцена: фиксированная высота, ширина из aspect-ratio */
-.scenes :deep(.scene) {
-
 }
 
 .scene3D {
   margin-top: 16px;
 }
-
-/* =========================
-   OFFSET MAIN CONTENT
-========================= */
 
 .layout {
   margin-left: calc(56px + 16px);
@@ -396,13 +300,12 @@ watch(() => containerStore.active.value, (next) => {
   .layout {
     grid-template-columns: 1fr;
     margin-left: 64px;
-    //padding: 16px;
   }
 
   .scenes {
     position: static;
     max-height: none;
-    order: -1; /* сцена сверху */
+    order: -1;
   }
 
   .scene3D {

@@ -48,3 +48,45 @@ export type EngineState = {
     placements: Placement[]
 }
 
+/**
+ * Режим поиска оптимальной позиции
+ */
+export type PlacementMode = 'uniform' | 'dense'
+
+/**
+ * Опции для поиска позиции
+ */
+export interface FindPlacementOptions {
+    mode: PlacementMode
+    /** Размещать только на полу (z = 0) */
+    floorOnly?: boolean
+}
+
+/**
+ * Кандидатная позиция для размещения
+ */
+export interface CandidatePosition {
+    x: number
+    y: number
+}
+
+/**
+ * Интерфейс для доступа к размещениям (read-only)
+ */
+export interface PlacementProvider {
+    getPlacements(): readonly Placement[]
+    getPlacementById(id: string): Placement | null
+}
+
+/**
+ * Интерфейс для доступа к HeightMap
+ * Позволяет не пересоздавать validator/positionFinder при rebuild
+ */
+export interface HeightMapProvider {
+    getHeightMap(): {
+        getCells(x: number, y: number, w: number, l: number): Cell[]
+        getBaseHeight(cells: Cell[]): number | null
+        hasPlacementAbove(placement: Placement): boolean
+    }
+}
+

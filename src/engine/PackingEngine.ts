@@ -2,345 +2,224 @@ import type {
     Container,
     ItemTemplate,
     Placement,
-    EngineState
+    EngineState,
+    FindPlacementOptions,
+    PlacementProvider,
+    HeightMapProvider
 } from './types'
-import {HeightMap} from './HeightMap'
-import { scoreUniform, scoreDense } from './scoring'
+import { HeightMap } from './HeightMap'
+import { PlacementValidator } from './PlacementValidator'
+import { PositionFinder } from './PositionFinder'
 
-type FindPlacementOptions = {
-    mode: 'uniform' | 'dense'
-    /** Искать размещение только на полу (z = 0) */
-    floorOnly?: boolean
-}
+/**
+ * PackingEngine - координатор операций с грузами
+ *
+ * Отвечает за:
+ * - Управление состоянием (placements, heightMap)
+ * - Координацию операций (add, remove, move)
+ * - Undo/Redo
+ *
+ * Делегирует:
+ * - Валидацию → PlacementValidator
+ * - Поиск позиций → PositionFinder
+ *
+ * Реализует PlacementProvider и HeightMapProvider для
+ * предоставления данных validator и positionFinder.
+ */
+export class PackingEngine implements PlacementProvider, HeightMapProvider {
+    private readonly container: Container
+    private readonly step: number
 
-export class PackingEngine {
-    private container: Container
-    private heightMap: HeightMap
     private placements: Placement[] = []
+    private readonly heightMap: HeightMap
+    private readonly validator: PlacementValidator
+    private readonly positionFinder: PositionFinder
+
     private undoStack: EngineState[] = []
     private redoStack: EngineState[] = []
-    private step: number
 
     constructor(container: Container, step = 1) {
         this.container = container
         this.step = step
         this.heightMap = new HeightMap(container, step)
+
+        // Validator и PositionFinder получают heightMap через this (provider)
+        // Это позволяет не пересоздавать их при rebuildHeightMap
+        this.validator = new PlacementValidator(container, this, this)
+        this.positionFinder = new PositionFinder(
+            container,
+            step,
+            this,
+            this.validator,
+            this
+        )
     }
 
-    canPlaceAt(
-        template: ItemTemplate,
-        x: number,
-        y: number
-    ): number | null {
-        const {width, length, height} = template
+    // ═══════════════════════════════════════════════════════════════
+    // HeightMapProvider interface
+    // ═══════════════════════════════════════════════════════════════
 
-        if (
-            x < 0 ||
-            y < 0 ||
-            x + width > this.container.width ||
-            y + length > this.container.length
-        ) {
-            return null
-        }
-
-        const cells = this.heightMap.getCells(x, y, width, length)
-        const z = this.heightMap.getBaseHeight(cells)
-        if (z === null) return null
-
-        // ❗ Нельзя ставить на fragile
-        for (const cell of cells) {
-            if (cell.topPlacementId) {
-                const below = this.getPlacementById(cell.topPlacementId)
-                if (below?.fragile) {
-                    return null
-                }
-            }
-        }
-
-        if (z + height > this.container.height) {
-            return null
-        }
-
-        return z
+    getHeightMap() {
+        return this.heightMap
     }
 
-    canModifyPlacement(id: string): boolean {
-        const p = this.getPlacementById(id)
-        if (!p) return false
-        if (p.locked) return false
-        return !this.heightMap.hasPlacementAbove(p)
+    // ═══════════════════════════════════════════════════════════════
+    // PlacementProvider interface
+    // ═══════════════════════════════════════════════════════════════
+
+    getPlacements(): readonly Placement[] {
+        return this.placements
     }
+
+    getPlacementById(id: string): Placement | null {
+        return this.placements.find(p => p.id === id) ?? null
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Валидация (делегируем PlacementValidator)
+    // ═══════════════════════════════════════════════════════════════
 
     /**
-     * 🎯 Генерация кандидатных позиций для размещения
-     *
-     * Вместо перебора всех позиций O(W×L) генерируем только "интересные" точки:
-     * - (0, 0) — угол контейнера
-     * - Справа от каждого груза: (p.x + p.width, p.y)
-     * - Снизу от каждого груза: (p.x, p.y + p.length)
-     *
-     * Это сокращает количество проверок с тысяч до десятков.
+     * Проверяет, можно ли разместить груз в позиции (x, y)
+     * @returns z-координата или null
      */
-    private getCandidatePositions(template: ItemTemplate): Array<{ x: number; y: number }> {
-        const candidates = new Map<string, { x: number; y: number }>()
-
-        const addCandidate = (x: number, y: number) => {
-            // Snap к сетке
-            const sx = Math.round(x / this.step) * this.step
-            const sy = Math.round(y / this.step) * this.step
-
-            // Проверяем границы с учётом размеров груза
-            if (sx < 0 || sy < 0) return
-            if (sx + template.width > this.container.width) return
-            if (sy + template.length > this.container.length) return
-
-            const key = `${sx},${sy}`
-            if (!candidates.has(key)) {
-                candidates.set(key, { x: sx, y: sy })
-            }
-        }
-
-        // Базовая позиция — угол контейнера
-        addCandidate(0, 0)
-
-        // Кандидаты от существующих грузов
-        for (const p of this.placements) {
-            // Справа от груза
-            addCandidate(p.x + p.width, p.y)
-
-            // Снизу от груза
-            addCandidate(p.x, p.y + p.length)
-
-            // Диагональ (полезно для заполнения углов)
-            addCandidate(p.x + p.width, p.y + p.length)
-
-            // Выравнивание по левому краю груза (для стекинга)
-            addCandidate(p.x, p.y)
-        }
-
-        return Array.from(candidates.values())
+    canPlaceAt(template: ItemTemplate, x: number, y: number): number | null {
+        return this.validator.canPlaceAt(template, x, y)
     }
 
     /**
-     * 🔍 Поиск оптимального размещения (оптимизированный)
-     *
-     * Использует кандидатные точки вместо полного перебора.
-     * Сложность: O(N) вместо O(W×L), где N — число размещений.
+     * Проверяет, можно ли модифицировать груз
+     */
+    canModifyPlacement(id: string): boolean {
+        return this.validator.canModifyById(id)
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Поиск позиции (делегируем PositionFinder)
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Находит оптимальную позицию для размещения груза
      */
     findPlacement(
         template: ItemTemplate,
         options: FindPlacementOptions = { mode: 'uniform' }
     ): Placement | null {
-        const candidates = this.getCandidatePositions(template)
-
-        let best: Placement | null = null
-        let bestScore: number | null = null
-
-        for (const { x, y } of candidates) {
-            const z = this.canPlaceAt(template, x, y)
-            if (z === null) continue
-
-            // В режиме floorOnly размещаем только на полу
-            if (options.floorOnly && z !== 0) continue
-
-            const cells = this.heightMap.getCells(x, y, template.width, template.length)
-
-            const score =
-                options.mode === 'uniform'
-                    ? scoreUniform(cells, z)
-                    : scoreDense(cells, z)
-
-            if (best === null || score < bestScore!) {
-                bestScore = score
-                best = {
-                    id: crypto.randomUUID(),
-                    templateId: template.templateId,
-                    x,
-                    y,
-                    z,
-                    width: template.width,
-                    length: template.length,
-                    height: template.height,
-                    fragile: template.fragile
-                }
-            }
-        }
-
-        return best
+        return this.positionFinder.findBestPosition(template, options)
     }
 
-    applyPlacementUnsafe(p: Placement): void {
-        this.placements.push(p)
-        this.heightMap.applyPlacement(p)
-    }
-
+    // ═══════════════════════════════════════════════════════════════
+    // Операции с грузами
+    // ═══════════════════════════════════════════════════════════════
 
     /**
-     * 📦 Только для чтения (UI / тесты / визуализация)
-     */
-    getPlacements(): readonly Placement[] {
-        return this.placements
-    }
-
-    /**
-     * ➕ Высокоуровневое добавление груза
-     * findPlacement → applyPlacement
+     * Добавляет груз с автоматическим поиском позиции
      */
     addItem(
         template: ItemTemplate,
-        options: { mode: 'uniform' | 'dense'; floorOnly?: boolean }
+        options: FindPlacementOptions
     ): Placement | null {
-        const pos = this.findPlacement(template, options)
+        const placement = this.findPlacement(template, options)
+        if (!placement) return null
 
-        if (!pos) {
-            return null
-        }
-
-        return this.addItemAt(template, pos.x, pos.y)
+        return this.addItemAt(template, placement.x, placement.y)
     }
 
     /**
-     * ➕ Добавление груза в конкретную позицию (x, y)
-     * z вычисляется автоматически
+     * Добавляет груз в конкретную позицию (x, y)
      */
-    addItemAt(
-        template: ItemTemplate,
-        x: number,
-        y: number
-    ): Placement | null {
+    addItemAt(template: ItemTemplate, x: number, y: number): Placement | null {
         const z = this.canPlaceAt(template, x, y)
+        if (z === null) return null
 
-        if (z === null) {
-            return null
-        }
-
-        const placement: Placement = {
-            // идентичность
-            id: template.id,
-            templateId: template.templateId,
-
-            // метаданные
-            name: template.name,
-            color: template.color,
-            weight: template.weight,
-
-            // геометрия
-            width: template.width,
-            length: template.length,
-            height: template.height,
-
-            // позиция
-            x,
-            y,
-            z,
-
-            // флаги
-            fragile: template.fragile,
-            locked: false,
-        }
+        const placement = this.createPlacement(template, x, y, z)
 
         this.commit()
-        this.applyPlacementUnsafe(placement)
+        this.applyPlacement(placement)
 
         return placement
     }
 
     /**
-     * ❌ Удаление груза
-     * Можно удалить ТОЛЬКО если сверху ничего не лежит
+     * Удаляет груз (только если сверху ничего нет и не заблокирован)
      */
     removePlacement(id: string): boolean {
+        const placement = this.getPlacementById(id)
+        if (!placement) return false
+
+        if (!this.validator.canModify(placement)) {
+            return false
+        }
+
         const index = this.placements.findIndex(p => p.id === id)
-        if (index === -1) return false
-
-        const placement = this.placements[index]
-
-        // 🔒 Нельзя удалять заблокированный
-        if (placement.locked) {
-            return false
-        }
-
-        // ❌ Нельзя удалять, если сверху что-то есть
-        if (this.hasItemsAbove(id)) {
-            return false
-        }
 
         this.commit()
         this.placements.splice(index, 1)
         this.rebuildHeightMap()
+
         return true
     }
 
     /**
-     * ↔️ Перемещение груза (v1)
-     * Можно перемещать ТОЛЬКО верхний груз
+     * Перемещает груз в новую позицию
      */
-    movePlacement(
-        id: string,
-        x: number,
-        y: number
-    ): Placement | null {
+    movePlacement(id: string, x: number, y: number): Placement | null {
+        const original = this.getPlacementById(id)
+        if (!original) return null
+
+        if (!this.validator.canModify(original)) {
+            return null
+        }
+
         const index = this.placements.findIndex(p => p.id === id)
-        if (index === -1) return null
 
         this.commit()
 
-        const original = this.placements[index]
-
-        // 🔒 Нельзя двигать заблокированный
-        if (original.locked) {
-            return null
-        }
-
-        // ❌ Нельзя двигать, если сверху что-то есть
-        if (this.hasItemsAbove(id)) {
-            return null
-        }
-
-        // 1. Временно убираем placement
+        // Временно убираем placement
         this.placements.splice(index, 1)
         this.rebuildHeightMap()
 
-        // 2. Проверяем новое место
-        const z = this.canPlaceAt(
-            {
-                id: original.templateId,
-                width: original.width,
-                length: original.length,
-                height: original.height,
-                fragile: original.fragile
-            },
-            x,
-            y
-        )
+        // Проверяем новое место
+        const template: ItemTemplate = {
+            id: original.id,
+            templateId: original.templateId,
+            width: original.width,
+            length: original.length,
+            height: original.height,
+            fragile: original.fragile
+        }
 
-        // 3. Если нельзя — откат
+        const z = this.canPlaceAt(template, x, y)
+
+        // Если нельзя — откат
         if (z === null) {
             this.placements.splice(index, 0, original)
             this.rebuildHeightMap()
             return null
         }
 
-        // 4. Применяем новое размещение
-        const moved: Placement = {
-            ...original,
-            x,
-            y,
-            z
-        }
-
+        // Применяем новое размещение
+        const moved: Placement = { ...original, x, y, z }
         this.placements.push(moved)
         this.rebuildHeightMap()
 
         return moved
     }
 
+    /**
+     * Устанавливает флаг locked
+     */
     setLocked(id: string, locked: boolean): boolean {
-        const p = this.getPlacementById(id)
-        if (!p) return false
-        p.locked = locked
+        const placement = this.getPlacementById(id)
+        if (!placement) return false
+
+        placement.locked = locked
         return true
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Undo / Redo
+    // ═══════════════════════════════════════════════════════════════
 
     undo(): boolean {
         if (!this.canUndo()) return false
@@ -348,6 +227,7 @@ export class PackingEngine {
         const prev = this.undoStack.pop()!
         this.redoStack.push(this.snapshot())
         this.restore(prev)
+
         return true
     }
 
@@ -357,6 +237,7 @@ export class PackingEngine {
         const next = this.redoStack.pop()!
         this.undoStack.push(this.snapshot())
         this.restore(next)
+
         return true
     }
 
@@ -368,29 +249,56 @@ export class PackingEngine {
         return this.redoStack.length > 0
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // Внутренние методы
+    // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Проверяет, лежит ли на этом грузе что-то ещё
+     * Применяет размещение (добавляет в список и обновляет heightMap)
+     * @internal Используется только внутри engine и в тестах
      */
-    private hasItemsAbove(id: string): boolean {
-        const placement = this.getPlacementById(id)
-        if (!placement) return false
-        return this.heightMap.hasPlacementAbove(placement)
+    applyPlacementUnsafe(p: Placement): void {
+        this.applyPlacement(p)
     }
 
-    private getPlacementById(id: string): Placement | null {
-        return this.placements.find(p => p.id === id) ?? null
+    private applyPlacement(placement: Placement): void {
+        this.placements.push(placement)
+        this.heightMap.applyPlacement(placement)
+    }
+
+    private createPlacement(
+        template: ItemTemplate,
+        x: number,
+        y: number,
+        z: number
+    ): Placement {
+        return {
+            id: template.id,
+            templateId: template.templateId,
+            name: (template as { name?: string }).name ?? '',
+            color: (template as { color?: string }).color ?? '#9e9e9e',
+            weight: (template as { weight?: number }).weight,
+            width: template.width,
+            length: template.length,
+            height: template.height,
+            x,
+            y,
+            z,
+            fragile: template.fragile ?? false,
+            locked: false,
+        }
     }
 
     /**
-     * 🔄 Полная пересборка карты высот
-     * Используется при удалении и в будущем при undo / move
+     * Пересчитывает HeightMap на основе текущих placements.
+     *
+     * Оптимизации:
+     * - Использует reset() вместо создания нового объекта
+     * - Не пересоздаёт validator и positionFinder (они получают heightMap через provider)
      */
     private rebuildHeightMap(): void {
-        // создаём новую пустую карту
-        this.heightMap = new HeightMap(this.container, this.step)
+        this.heightMap.reset()
 
-        // заново применяем все размещения
         for (const placement of this.placements) {
             this.heightMap.applyPlacement(placement)
         }

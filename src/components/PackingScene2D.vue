@@ -166,20 +166,35 @@ function onMouseMove(e: MouseEvent) {
   const targetX = snap(clampedX, props.step)
   const targetY = snap(clampedY, props.step)
 
-  // Быстрая проверка текущей позиции (1 вызов)
-  const isValid = props.onMove(p.id, targetX, targetY) !== null
+  const lastX = lastValidPosition.value.x
+  const lastY = lastValidPosition.value.y
 
-  if (isValid) {
-    // Позиция валидна — обновляем lastValid
+  // Пробуем полное перемещение
+  if (props.onMove(p.id, targetX, targetY) !== null) {
     lastValidPosition.value = { x: targetX, y: targetY }
+    preview.value = { x: targetX, y: targetY, valid: true }
+    return
   }
 
-  // Preview показывает текущую позицию курсора
-  // Бинарный поиск для "прилипания" будет при mouseUp
+  // Скольжение: пробуем двигаться только по X (Y остаётся от lastValid)
+  if (targetX !== lastX && props.onMove(p.id, targetX, lastY) !== null) {
+    lastValidPosition.value = { x: targetX, y: lastY }
+    preview.value = { x: targetX, y: lastY, valid: true }
+    return
+  }
+
+  // Скольжение: пробуем двигаться только по Y (X остаётся от lastValid)
+  if (targetY !== lastY && props.onMove(p.id, lastX, targetY) !== null) {
+    lastValidPosition.value = { x: lastX, y: targetY }
+    preview.value = { x: lastX, y: targetY, valid: true }
+    return
+  }
+
+  // Ничего не сработало — показываем невалидный preview
   preview.value = {
     x: targetX,
     y: targetY,
-    valid: isValid,
+    valid: false,
   }
 }
 

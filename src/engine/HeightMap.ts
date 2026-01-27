@@ -1,22 +1,41 @@
 import type { Container, Cell, Placement } from './types'
 
 export class HeightMap {
-    private step: number
-    private width: number
-    private length: number
+    private readonly step: number
+    private readonly gridWidth: number
+    private readonly gridLength: number
     private grid: Cell[][]
 
     constructor(container: Container, step = 1) {
         this.step = step
-        this.width = Math.ceil(container.width / step)
-        this.length = Math.ceil(container.length / step)
+        this.gridWidth = Math.ceil(container.width / step)
+        this.gridLength = Math.ceil(container.length / step)
+        this.grid = this.createEmptyGrid()
+    }
 
-        this.grid = Array.from({ length: this.width }, () =>
-            Array.from({ length: this.length }, () => ({
+    /**
+     * Создаёт пустую сетку
+     */
+    private createEmptyGrid(): Cell[][] {
+        return Array.from({ length: this.gridWidth }, () =>
+            Array.from({ length: this.gridLength }, () => ({
                 height: 0,
                 topPlacementId: null
             }))
         )
+    }
+
+    /**
+     * Сбрасывает HeightMap в начальное состояние без пересоздания объекта.
+     * Оптимизация: переиспользуем существующие ячейки вместо аллокации новых.
+     */
+    reset(): void {
+        for (let i = 0; i < this.gridWidth; i++) {
+            for (let j = 0; j < this.gridLength; j++) {
+                this.grid[i][j].height = 0
+                this.grid[i][j].topPlacementId = null
+            }
+        }
     }
 
     /**

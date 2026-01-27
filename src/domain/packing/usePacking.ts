@@ -1,10 +1,12 @@
-import { shallowRef, ref, computed } from 'vue'
+import { shallowRef, ref } from 'vue'
 import { PackingEngine } from '@/engine/PackingEngine'
 import { PackingCommandExecutor } from '@/engine/commands/PackingCommandExecutor'
-import type { Container, Placement } from '@/engine/types'
-import type { CargoTemplate } from '@/data/templates/types'
+import type { Container, Placement, PlacementMode } from '@/engine/types'
+import { usePackingStats } from './usePackingStats'
+import { usePackingOperations } from './usePackingOperations'
 
-export type PackingMode = 'uniform' | 'dense'
+/** @deprecated Use PlacementMode from engine/types */
+export type PackingMode = PlacementMode
 
 export interface UsePackingOptions {
     step?: number
@@ -12,6 +14,15 @@ export interface UsePackingOptions {
     floorOnly?: boolean
 }
 
+/**
+ * Главный composable для работы с размещением грузов
+ *
+ * Координирует:
+ * - PackingEngine (алгоритмы)
+ * - PackingCommandExecutor (команды)
+ * - usePackingStats (статистика)
+ * - usePackingOperations (операции)
+ */
 export function usePacking(
     container: Container,
     options: UsePackingOptions | number = {}
@@ -22,7 +33,6 @@ export function usePacking(
         : options
 
     const step = opts.step ?? 50
-    const floorOnly = ref(opts.floorOnly ?? false)
 
     /* =========================
        ENGINE
@@ -37,51 +47,21 @@ export function usePacking(
        STATE
     ========================= */
 
-    const mode = ref<PackingMode>('uniform')
+    const mode = ref<PlacementMode>('uniform')
+    const floorOnly = ref(opts.floorOnly ?? false)
     const placements = ref<readonly Placement[]>([])
 
-    const containerVolume =
-        container.width * container.length * container.height
-
-    const containerFloorArea =
-        container.width * container.length
-
-    const usedVolume = computed(() =>
-        placements.value.reduce(
-            (sum, p) => sum + p.width * p.length * p.height,
-            0
-        )
-    )
-
-    const usedFloorArea = computed(() =>
-        placements.value.reduce(
-            (sum, p) => sum + p.width * p.length,
-            0
-        )
-    )
-
-    const volumeFill = computed(() => {
-        const v = containerVolume === 0 ? 0 : Math.min(usedVolume.value / containerVolume, 1)
-        return v
-    })
-
-    const floorFill = computed(() => {
-        const f = containerFloorArea === 0 ? 0 : Math.min(usedFloorArea.value / containerFloorArea, 1)
-        return f
-    })
-
-    const usedWeight = computed(() => {
-        return placements.value.reduce((sum, p) => {
-            return sum + (typeof p.weight === 'number' ? p.weight : 0)
-        }, 0)
-    })
-
     /* =========================
-       INTERNAL
+       SYNC
     ========================= */
 
     function sync() {
         placements.value = engine.value.getPlacements().map(p => ({ ...p }))
+    }
+
+    function resetEngine() {
+        engine.value = new PackingEngine(container, step)
+        executor.value = new PackingCommandExecutor(engine.value)
     }
 
     function resetContainer(newContainer: Container) {
@@ -90,247 +70,28 @@ export function usePacking(
         sync()
     }
 
-    /** Внутренний helper для добавления груза */
-    function executeAddItem(item: {
-        templateId?: string
-        name: string
-        color: string
-        weight?: number
-        width: number
-        length: number
-        height: number
-        fragile: boolean
-    }): boolean {
-        const res = executor.value.execute({
-            type: 'addItem',
-            template: {
-                id: crypto.randomUUID(),
-                templateId: item.templateId,
-                name: item.name,
-                color: item.color,
-                weight: item.weight,
-                width: item.width,
-                length: item.length,
-                height: item.height,
-                fragile: item.fragile,
-            },
-            mode: mode.value,
-            floorOnly: floorOnly.value,
-        })
-        if (res.ok) sync()
-        return res.ok
-    }
-
     /* =========================
-       COMMANDS
+       COMPOSE
     ========================= */
 
-    function addFromTemplate(template: CargoTemplate): boolean {
-        return executeAddItem({
-            templateId: template.id,
-            name: template.name,
-            color: template.color,
-            weight: template.weight,
-            width: template.width,
-            length: template.length,
-            height: template.height,
-            fragile: template.fragile,
-        })
-    }
+    const stats = usePackingStats(container, placements)
 
-    /** Добавление груза из шаблона в конкретную позицию */
-    function addFromTemplateAt(template: CargoTemplate, x: number, y: number): boolean {
-        const placement = engine.value.addItemAt(
-            {
-                id: crypto.randomUUID(),
-                templateId: template.id,
-                name: template.name,
-                color: template.color,
-                weight: template.weight,
-                width: template.width,
-                length: template.length,
-                height: template.height,
-                fragile: template.fragile,
-            },
-            x,
-            y
-        )
+    const operations = usePackingOperations({
+        engine,
+        executor,
+        container,
+        step,
+        mode,
+        floorOnly,
+        sync,
+        resetEngine,
+    })
 
-        if (placement) {
-            sync()
-            return true
-        }
-        return false
-    }
+    /* =========================
+       MODE SETTERS
+    ========================= */
 
-    function addCustomItem(item: {
-        name: string
-        color: string
-        weight?: number
-        width: number
-        length: number
-        height: number
-        fragile: boolean
-    }): boolean {
-        return executeAddItem(item)
-    }
-
-    function removePlacement(id: string): boolean {
-        const ok = executor.value.execute({
-            type: 'removePlacement',
-            placementId: id,
-        }).ok
-
-        if (ok) sync()
-        return ok
-    }
-
-    function editPlacement(id: string, patch: Partial<Placement>): boolean {
-        if (!canModify(id)) return false
-
-        const old = engine.value.getPlacements().find(p => p.id === id)
-        if (!old) return false
-
-        executor.value.execute({
-            type: 'removePlacement',
-            placementId: id,
-        })
-
-        executor.value.execute({
-            type: 'addItem',
-            template: {
-                id: crypto.randomUUID(),
-                templateId: old.templateId,
-
-                name: patch.name ?? old.name,
-                color: patch.color ?? old.color,
-                weight: patch.weight ?? old.weight,
-
-                width: patch.width ?? old.width,
-                length: patch.length ?? old.length,
-                height: patch.height ?? old.height,
-                fragile: patch.fragile ?? old.fragile,
-            },
-            mode: mode.value,
-            floorOnly: floorOnly.value,
-        })
-
-        sync()
-        return true
-    }
-
-    function optimize(): boolean {
-        // 1. Сохраняем грузы
-        const items = engine.value.getPlacements().map(p => ({
-            templateId: p.templateId,
-            width: p.width,
-            length: p.length,
-            height: p.height,
-            fragile: p.fragile,
-            weight: p.weight,
-            color: p.color,
-            name: p.name,
-        }))
-
-        // 2. Пересоздаём engine
-        engine.value = new PackingEngine(container, step)
-        executor.value = new PackingCommandExecutor(engine.value)
-
-        // 3. Кладём грузы заново в текущем режиме
-        for (const item of items) {
-            const res = executor.value.execute({
-                type: 'addItem',
-                template: {
-                    id: crypto.randomUUID(),
-                    ...item,
-                },
-                mode: mode.value,
-                floorOnly: floorOnly.value,
-            })
-
-            if (!res.ok) {
-                console.warn('[optimize] item skipped:', item)
-            }
-        }
-
-        sync()
-        return true
-    }
-
-    function movePlacement(id: string, x: number, y: number): Placement | null {
-        const moved = engine.value.movePlacement(id, x, y)
-
-        if (moved) {
-            sync()
-            return moved
-        }
-
-        return null
-    }
-
-    function rotatePlacement(id: string): boolean {
-        if (!canModify(id)) return false
-
-        const p = engine.value.getPlacements().find(p => p.id === id)
-        if (!p) return false
-
-        // 1. удаляем
-        const removed = executor.value.execute({
-            type: 'removePlacement',
-            placementId: id,
-        }).ok
-
-        if (!removed) return false
-
-        // 2. добавляем повернутый (swap width/length)
-        const added = executor.value.execute({
-            type: 'addItem',
-            template: {
-                id: crypto.randomUUID(),
-                templateId: p.templateId,
-                width: p.length,
-                length: p.width,
-                height: p.height,
-                fragile: p.fragile,
-                weight: p.weight,
-                color: p.color,
-                name: p.name,
-            },
-            mode: mode.value,
-            floorOnly: floorOnly.value,
-        }).ok
-
-        // 3. если не влез — откат
-        if (!added) {
-            executor.value.execute({
-                type: 'addItem',
-                template: {
-                    id: crypto.randomUUID(),
-                    templateId: p.templateId,
-                    width: p.width,
-                    length: p.length,
-                    height: p.height,
-                    fragile: p.fragile,
-                    weight: p.weight,
-                    color: p.color,
-                    name: p.name,
-                },
-                mode: mode.value,
-                floorOnly: floorOnly.value,
-            })
-            sync()
-            return false
-        }
-
-        sync()
-        return true
-    }
-
-    function canModify(id: string): boolean {
-        return engine.value.canModifyPlacement(id)
-    }
-
-    function setMode(next: PackingMode) {
+    function setMode(next: PlacementMode) {
         mode.value = next
     }
 
@@ -344,31 +105,40 @@ export function usePacking(
 
     sync()
 
+    /* =========================
+       RETURN
+    ========================= */
+
     return {
+        // state
         placements,
         mode,
         floorOnly,
 
-        // stats
-        usedVolume,
-        volumeFill,
-        usedFloorArea,
-        floorFill,
-        usedWeight,
+        // stats (from usePackingStats)
+        usedVolume: stats.usedVolume,
+        volumeFill: stats.volumeFill,
+        usedFloorArea: stats.usedFloorArea,
+        floorFill: stats.floorFill,
+        usedWeight: stats.usedWeight,
 
-        // actions
-        addFromTemplate,
-        addFromTemplateAt,
-        removePlacement,
-        editPlacement,
-        optimize,
+        // operations (from usePackingOperations)
+        addFromTemplate: operations.addFromTemplate,
+        addFromTemplateAt: operations.addFromTemplateAt,
+        addCustomItem: operations.addCustomItem,
+        removePlacement: operations.removePlacement,
+        editPlacement: operations.editPlacement,
+        movePlacement: operations.movePlacement,
+        rotatePlacement: operations.rotatePlacement,
+        optimize: operations.optimize,
+        canModify: operations.canModify,
+
+        // settings
         setMode,
         setFloorOnly,
-        canModify,
-        rotatePlacement,
-        addCustomItem,
         resetContainer,
-        movePlacement,
-        step
+
+        // meta
+        step,
     }
 }

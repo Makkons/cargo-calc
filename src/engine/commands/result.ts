@@ -1,5 +1,6 @@
-import type { Placement } from '../types'
-
-export type CommandResult =
-    | { ok: true; placement?: Placement }
-    | { ok: false; reason: string }
+/**
+ * Re-export CommandResult из основного модуля result
+ *
+ * @deprecated Импортируйте напрямую из '@/engine/result'
+ */
+export { type CommandResult } from '../result'
