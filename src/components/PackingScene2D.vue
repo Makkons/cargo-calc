@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import type { Placement, Container } from '@/engine/types'
 import type { CargoTemplate } from '@/data/templates/types'
+import { SnapHelper } from '@/engine/SnapHelper'
 import { useDragTemplate } from '@/composables/useDragTemplate'
 import { useHighlightedPlacement } from '@/composables/useHighlightedPlacement'
 import Car from '@/assets/images/car.png'
@@ -13,6 +14,8 @@ const { highlightedId, setHighlighted } = useHighlightedPlacement()
    PROPS
 ========================= */
 
+import type { MoveCheckResult, DropPosition } from '@/domain/packing/usePackingOperations'
+
 const props = defineProps<{
   container: Container
   placements: Placement[]
@@ -21,6 +24,8 @@ const props = defineProps<{
   onRemove: (id: string) => void
   onRotate: (id: string) => void
   onDropTemplate: (template: CargoTemplate, x: number, y: number) => boolean
+  checkMovePosition: (id: string, x: number, y: number) => MoveCheckResult
+  findDropPosition: (id: string, x: number, y: number) => DropPosition | null
   step: number
 }>()
 
@@ -29,86 +34,60 @@ const props = defineProps<{
 ========================= */
 
 const containerEl = ref<HTMLDivElement | null>(null)
-const draggingId = ref<string | null>(null)
 
 /** Триггер для пересчёта scale при resize */
 const resizeKey = ref(0)
 let resizeObserver: ResizeObserver | null = null
 let resizeTimeout: ReturnType<typeof setTimeout> | null = null
 
-/** Смещение курсора относительно верхнего левого угла груза при захвате */
-const dragOffset = ref<{ x: number; y: number } | null>(null)
-
-const preview = ref<{
-  x: number
-  y: number
-  valid: boolean
+/**
+ * Состояние drag-and-drop для Free Drag подхода.
+ * Груз визуально следует за курсором через CSS transform,
+ * реальное перемещение происходит только при mouseup.
+ */
+const dragState = ref<{
+  id: string
+  startX: number        // Начальная позиция груза
+  startY: number
+  offsetX: number       // Смещение курсора от верхнего левого угла
+  offsetY: number
+  currentX: number      // Текущая визуальная позиция (snapped)
+  currentY: number
+  valid: boolean        // Валидна ли текущая позиция
+  snappedX: boolean     // Прилип ли по X к грани другого груза
+  snappedY: boolean     // Прилип ли по Y к грани другого груза
 } | null>(null)
 
-/** Последняя валидная позиция для "прилипания" к границам */
-const lastValidPosition = ref<{ x: number; y: number } | null>(null)
+/**
+ * SnapHelper для притягивания к граням других грузов.
+ * Создаётся один раз при монтировании (container и step не меняются).
+ */
+let snapHelper: SnapHelper | null = null
+function getSnapHelper(): SnapHelper {
+  if (!snapHelper) {
+    snapHelper = new SnapHelper(props.container, props.step, 30, 45)
+  }
+  return snapHelper
+}
 
 /* =========================
    UTILS
 ========================= */
 
-function snap(value: number, step: number) {
-  return Math.round(value / step) * step
+function snapToGrid(value: number): number {
+  return Math.round(value / props.step) * props.step
 }
 
-function getPlacement(id: string) {
+function getPlacement(id: string): Placement | null {
   return props.placements.find(p => p.id === id) ?? null
 }
 
-/**
- * Бинарный поиск ближайшей валидной позиции на пути от start к target.
- * Используется для "прилипания" к грузам при быстром перемещении.
- *
- * @returns Ближайшая валидная позиция или null если start невалидна
- */
-function findNearestValidPosition(
-    id: string,
-    startX: number,
-    startY: number,
-    targetX: number,
-    targetY: number
-): { x: number; y: number } | null {
-  // Если target валиден — просто возвращаем его
-  if (props.onMove(id, targetX, targetY) !== null) {
-    return { x: targetX, y: targetY }
-  }
-
-  // Бинарный поиск границы между валидной и невалидной областью
-  let lo = 0 // start (должен быть валидным)
-  let hi = 1 // target (невалидный)
-
-  // 8 итераций дают точность ~0.4% от расстояния, достаточно для step
-  for (let i = 0; i < 8; i++) {
-    const mid = (lo + hi) / 2
-    const x = snap(startX + (targetX - startX) * mid, props.step)
-    const y = snap(startY + (targetY - startY) * mid, props.step)
-
-    if (props.onMove(id, x, y) !== null) {
-      lo = mid
-    } else {
-      hi = mid
-    }
-  }
-
-  // Возвращаем позицию на границе (lo — последняя валидная точка)
-  const resultX = snap(startX + (targetX - startX) * lo, props.step)
-  const resultY = snap(startY + (targetY - startY) * lo, props.step)
-
-  // Если результат совпадает с start — движение невозможно
-  if (resultX === startX && resultY === startY) {
-    return null
-  }
-
-  return { x: resultX, y: resultY }
-}
-
 /* =========================
-   DRAG LOGIC
+   DRAG LOGIC (Free Drag)
+
+   Принцип: груз визуально следует за курсором через CSS transform.
+   Валидация происходит постоянно для индикации цветом.
+   Реальное перемещение — только при mouseup.
 ========================= */
 
 function onMouseDown(p: Placement, e: MouseEvent) {
@@ -121,19 +100,19 @@ function onMouseDown(p: Placement, e: MouseEvent) {
   const clickX = (e.clientX - rect.left) / scale.value
   const clickY = (e.clientY - rect.top) / scale.value
 
-  // Сохраняем смещение курсора относительно верхнего левого угла груза
-  dragOffset.value = {
-    x: clickX - p.x,
-    y: clickY - p.y,
-  }
-
-  draggingId.value = p.id
-  preview.value = {
-    x: p.x,
-    y: p.y,
+  // Инициализируем состояние drag
+  dragState.value = {
+    id: p.id,
+    startX: p.x,
+    startY: p.y,
+    offsetX: clickX - p.x,
+    offsetY: clickY - p.y,
+    currentX: p.x,
+    currentY: p.y,
     valid: true,
+    snappedX: false,
+    snappedY: false,
   }
-  lastValidPosition.value = { x: p.x, y: p.y }
 
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
@@ -149,104 +128,77 @@ const scale = computed(() => {
 })
 
 function onMouseMove(e: MouseEvent) {
-  if (!draggingId.value || !preview.value || !containerEl.value || !dragOffset.value || !lastValidPosition.value) return
+  if (!dragState.value || !containerEl.value) return
 
   const rect = containerEl.value.getBoundingClientRect()
-  const p = getPlacement(draggingId.value)
+  const p = getPlacement(dragState.value.id)
   if (!p) return
 
-  // Вычисляем позицию курсора и вычитаем offset, чтобы груз не прыгал
-  const rawX = (e.clientX - rect.left) / scale.value - dragOffset.value.x
-  const rawY = (e.clientY - rect.top) / scale.value - dragOffset.value.y
+  // Вычисляем позицию курсора и вычитаем offset
+  const rawX = (e.clientX - rect.left) / scale.value - dragState.value.offsetX
+  const rawY = (e.clientY - rect.top) / scale.value - dragState.value.offsetY
 
-  // Clamp к границам контейнера (груз не может выйти за пределы)
+  // Clamp к границам контейнера
   const clampedX = Math.max(0, Math.min(rawX, props.container.width - p.width))
   const clampedY = Math.max(0, Math.min(rawY, props.container.length - p.length))
 
-  const targetX = snap(clampedX, props.step)
-  const targetY = snap(clampedY, props.step)
+  // Применяем snap к граням других грузов (приоритет над сеткой)
+  const snapped = getSnapHelper().snap(
+    clampedX,
+    clampedY,
+    p,
+    props.placements,
+    { snappedX: dragState.value.snappedX, snappedY: dragState.value.snappedY }
+  )
 
-  const lastX = lastValidPosition.value.x
-  const lastY = lastValidPosition.value.y
+  const targetX = snapped.x
+  const targetY = snapped.y
 
-  // Пробуем полное перемещение
-  if (props.onMove(p.id, targetX, targetY) !== null) {
-    lastValidPosition.value = { x: targetX, y: targetY }
-    preview.value = { x: targetX, y: targetY, valid: true }
-    return
-  }
+  // Проверяем валидность БЕЗ реального перемещения
+  const check = props.checkMovePosition(dragState.value.id, targetX, targetY)
 
-  // Скольжение: пробуем двигаться только по X (Y остаётся от lastValid)
-  if (targetX !== lastX && props.onMove(p.id, targetX, lastY) !== null) {
-    lastValidPosition.value = { x: targetX, y: lastY }
-    preview.value = { x: targetX, y: lastY, valid: true }
-    return
-  }
-
-  // Скольжение: пробуем двигаться только по Y (X остаётся от lastValid)
-  if (targetY !== lastY && props.onMove(p.id, lastX, targetY) !== null) {
-    lastValidPosition.value = { x: lastX, y: targetY }
-    preview.value = { x: lastX, y: targetY, valid: true }
-    return
-  }
-
-  // Ничего не сработало — показываем невалидный preview
-  preview.value = {
-    x: targetX,
-    y: targetY,
-    valid: false,
-  }
+  // Обновляем визуальное состояние
+  dragState.value.currentX = targetX
+  dragState.value.currentY = targetY
+  dragState.value.valid = check.valid
+  dragState.value.snappedX = snapped.snappedX
+  dragState.value.snappedY = snapped.snappedY
 }
 
 function onMouseUp() {
-  if (!draggingId.value || !lastValidPosition.value || !preview.value) {
-    cleanup()
+  if (!dragState.value) {
+    cleanupDrag()
     return
   }
 
-  const p = getPlacement(draggingId.value)
-  if (!p) {
-    cleanup()
+  const { id, startX, startY, currentX, currentY, valid } = dragState.value
+
+  // Если позиция не изменилась — ничего не делаем
+  if (currentX === startX && currentY === startY) {
+    cleanupDrag()
     return
   }
 
-  let finalX = lastValidPosition.value.x
-  let finalY = lastValidPosition.value.y
-
-  // Если текущая позиция невалидна — ищем ближайшую валидную (прилипание)
-  if (!preview.value.valid) {
-    const nearest = findNearestValidPosition(
-        draggingId.value,
-        lastValidPosition.value.x,
-        lastValidPosition.value.y,
-        preview.value.x,
-        preview.value.y
-    )
-    if (nearest) {
-      finalX = nearest.x
-      finalY = nearest.y
-    }
+  if (valid) {
+    // Позиция валидна — перемещаем напрямую
+    props.onMove(id, currentX, currentY)
   } else {
-    // Текущая позиция валидна — используем её
-    finalX = preview.value.x
-    finalY = preview.value.y
+    // Позиция невалидна — ищем ближайшую валидную
+    const drop = props.findDropPosition(id, currentX, currentY)
+    if (drop) {
+      props.onMove(id, drop.x, drop.y)
+    }
+    // Если не нашли — груз остаётся на месте (ничего не делаем)
   }
 
-  props.onMove(draggingId.value, finalX, finalY)
-  cleanup()
+  cleanupDrag()
 }
 
-function cleanup() {
-  draggingId.value = null
-  preview.value = null
-  dragOffset.value = null
-  lastValidPosition.value = null
-
+function cleanupDrag() {
+  dragState.value = null
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
 }
-
-onBeforeUnmount(cleanup)
 
 /* =========================
    RESIZE OBSERVER
@@ -268,17 +220,6 @@ onMounted(() => {
   resizeObserver.observe(containerEl.value)
 })
 
-onBeforeUnmount(() => {
-  if (resizeObserver) {
-    resizeObserver.disconnect()
-    resizeObserver = null
-  }
-  if (resizeTimeout) {
-    clearTimeout(resizeTimeout)
-    resizeTimeout = null
-  }
-})
-
 /* =========================
    TEMPLATE DRAG PREVIEW
 ========================= */
@@ -291,6 +232,9 @@ const templatePreview = ref<{
   color: string
   valid: boolean
 } | null>(null)
+
+/** Состояние snap для template preview */
+const templateSnapState = ref({ snappedX: false, snappedY: false })
 
 function onGlobalMouseMove(e: MouseEvent) {
   if (!isDragging.value || !draggingTemplate.value || !containerEl.value) return
@@ -307,6 +251,7 @@ function onGlobalMouseMove(e: MouseEvent) {
 
   if (!isOverContainer) {
     templatePreview.value = null
+    templateSnapState.value = { snappedX: false, snappedY: false }
     setHideGhost(false)
     return
   }
@@ -318,19 +263,48 @@ function onGlobalMouseMove(e: MouseEvent) {
   const rawX = (e.clientX - rect.left) / scale.value - template.width / 2
   const rawY = (e.clientY - rect.top) / scale.value - template.length / 2
 
-  const x = snap(Math.max(0, rawX), props.step)
-  const y = snap(Math.max(0, rawY), props.step)
+  // Clamp к границам
+  const clampedX = Math.max(0, Math.min(rawX, props.container.width - template.width))
+  const clampedY = Math.max(0, Math.min(rawY, props.container.length - template.length))
 
-  // Проверяем валидность позиции (грубая проверка границ)
+  // Создаём временный placement для snap
+  const tempPlacement: Placement = {
+    id: '__template_preview__',
+    templateId: template.id,
+    name: template.name,
+    color: template.color,
+    weight: template.weight,
+    width: template.width,
+    length: template.length,
+    height: template.height,
+    x: clampedX,
+    y: clampedY,
+    z: 0,
+    fragile: template.fragile,
+    locked: false,
+  }
+
+  // Применяем snap к граням других грузов
+  const snapped = getSnapHelper().snap(
+    clampedX,
+    clampedY,
+    tempPlacement,
+    props.placements,
+    templateSnapState.value
+  )
+
+  templateSnapState.value = { snappedX: snapped.snappedX, snappedY: snapped.snappedY }
+
+  // Проверяем валидность (границы контейнера)
   const valid =
-    x >= 0 &&
-    y >= 0 &&
-    x + template.width <= props.container.width &&
-    y + template.length <= props.container.length
+    snapped.x >= 0 &&
+    snapped.y >= 0 &&
+    snapped.x + template.width <= props.container.width &&
+    snapped.y + template.length <= props.container.length
 
   templatePreview.value = {
-    x,
-    y,
+    x: snapped.x,
+    y: snapped.y,
     width: template.width,
     length: template.length,
     color: template.color,
@@ -354,6 +328,7 @@ function onGlobalMouseUp() {
   }
 
   templatePreview.value = null
+  templateSnapState.value = { snappedX: false, snappedY: false }
   setHideGhost(false)
   stopDrag()
 }
@@ -370,9 +345,30 @@ watch(isDragging, (dragging) => {
   }
 })
 
+/* =========================
+   CLEANUP
+========================= */
+
 onBeforeUnmount(() => {
+  // Drag cleanup
+  cleanupDrag()
+
+  // Resize observer cleanup
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+  if (resizeTimeout) {
+    clearTimeout(resizeTimeout)
+    resizeTimeout = null
+  }
+
+  // Template drag cleanup
   window.removeEventListener('mousemove', onGlobalMouseMove)
   window.removeEventListener('mouseup', onGlobalMouseUp)
+
+  // Reset snapHelper
+  snapHelper = null
 })
 
 /* =========================
@@ -380,7 +376,7 @@ onBeforeUnmount(() => {
 ========================= */
 
 function itemStyle(p: Placement) {
-  return {
+  const base: Record<string, string> = {
     left: p.x * scale.value + 'px',
     top: p.y * scale.value + 'px',
     width: p.width * scale.value + 'px',
@@ -388,6 +384,16 @@ function itemStyle(p: Placement) {
     background: p.color || '#9e9e9e',
     border: '1px solid #333',
   }
+
+  // Если это перетаскиваемый груз — добавляем transform для визуального смещения
+  if (dragState.value && dragState.value.id === p.id) {
+    const dx = (dragState.value.currentX - p.x) * scale.value
+    const dy = (dragState.value.currentY - p.y) * scale.value
+    base.transform = `translate(${dx}px, ${dy}px)`
+    base.zIndex = '100'
+  }
+
+  return base
 }
 
 /**
@@ -425,19 +431,6 @@ function getContrastColor(hexColor: string | undefined): string {
   return luminance > 128 ? '#000000' : '#ffffff'
 }
 
-const previewStyle = computed(() => {
-  if (!preview.value || !draggingId.value) return {}
-
-  const p = getPlacement(draggingId.value)
-  if (!p) return {}
-
-  return {
-    left: preview.value.x * scale.value + 'px',
-    top: preview.value.y * scale.value + 'px',
-    width: p.width * scale.value + 'px',
-    height: p.length * scale.value + 'px',
-  }
-})
 </script>
 
 <template>
@@ -477,7 +470,9 @@ const previewStyle = computed(() => {
         class="item"
         :class="{
           'item--locked': !canModify(p.id),
-          'item--highlighted': highlightedId === p.id
+          'item--highlighted': highlightedId === p.id,
+          'item--dragging': dragState?.id === p.id,
+          'item--invalid': dragState?.id === p.id && !dragState.valid
         }"
         :style="itemStyle(p)"
         @mousedown="e => onMouseDown(p, e)"
@@ -517,14 +512,6 @@ const previewStyle = computed(() => {
         </button>
       </div>
     </div>
-
-    <!-- PREVIEW для перемещения существующих грузов -->
-    <div
-        v-if="preview && draggingId"
-        class="preview"
-        :class="{ invalid: !preview.valid }"
-        :style="previewStyle"
-    />
 
     <!-- PREVIEW для нового груза из шаблонов -->
     <div
@@ -637,6 +624,28 @@ const previewStyle = computed(() => {
   box-shadow: 0 0 12px rgba(251, 191, 36, 0.6);
 }
 
+.item--dragging {
+  opacity: 0.9;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  cursor: grabbing;
+  /* Плавный transform для отзывчивости */
+  transition: none;
+}
+
+.item--invalid {
+  outline: 3px dashed #f44336 !important;
+  outline-offset: -1px;
+  background-image:
+      repeating-linear-gradient(
+          45deg,
+          transparent,
+          transparent 8px,
+          rgba(244, 67, 54, 0.15) 8px,
+          rgba(244, 67, 54, 0.15) 16px
+      ) !important;
+  background-blend-mode: overlay;
+}
+
 /* =========================
    ITEM LABEL
 ========================= */
@@ -738,30 +747,6 @@ const previewStyle = computed(() => {
 
 .item-btn--remove:hover {
   background: #dc2626;
-}
-
-/* =========================
-   PREVIEW
-========================= */
-
-.preview {
-  position: absolute;
-  pointer-events: none;
-
-  z-index: 5;
-
-  box-sizing: border-box;
-
-  /* ❗ outline вместо border */
-  outline: 2px dashed #4caf50;
-  outline-offset: -2px;
-
-  background: rgba(76, 175, 80, 0.25);
-}
-
-.preview.invalid {
-  outline-color: #f44336;
-  background: rgba(244, 67, 54, 0.25);
 }
 
 /* =========================

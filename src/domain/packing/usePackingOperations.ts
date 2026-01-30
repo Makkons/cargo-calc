@@ -15,6 +15,17 @@ export interface PackingOperationsContext {
     resetEngine: () => void
 }
 
+export interface MoveCheckResult {
+    valid: boolean
+    z?: number
+}
+
+export interface DropPosition {
+    x: number
+    y: number
+    z: number
+}
+
 export interface PackingOperations {
     addFromTemplate: (template: CargoTemplate) => boolean
     addFromTemplateAt: (template: CargoTemplate, x: number, y: number) => boolean
@@ -25,6 +36,12 @@ export interface PackingOperations {
     rotatePlacement: (id: string) => boolean
     optimize: () => boolean
     canModify: (id: string) => boolean
+    /** Проверяет возможность перемещения БЕЗ реального перемещения (для drag preview) */
+    checkMovePosition: (id: string, x: number, y: number) => MoveCheckResult
+    /** Ищет ближайшую валидную позицию для drop */
+    findDropPosition: (id: string, x: number, y: number) => DropPosition | null
+    /** Восстанавливает размещения из истории с сохранением координат */
+    restorePlacements: (placements: Placement[]) => void
 }
 
 export interface CustomItemInput {
@@ -93,7 +110,9 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
     }
 
     function addFromTemplateAt(template: CargoTemplate, x: number, y: number): boolean {
-        const placement = engine.value.addItemAt(
+        // Используем addItemAtOrNear чтобы при бросании на занятое место
+        // груз размещался в ближайшей валидной позиции
+        const placement = engine.value.addItemAtOrNear(
             {
                 id: crypto.randomUUID(),
                 templateId: template.id,
@@ -272,6 +291,31 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
         return engine.value.canModifyPlacement(id)
     }
 
+    /**
+     * Проверяет возможность перемещения груза БЕЗ реального перемещения.
+     * Используется для валидации во время drag-and-drop.
+     */
+    function checkMovePosition(id: string, x: number, y: number): MoveCheckResult {
+        const z = engine.value.canMoveToPosition(id, x, y)
+        return z !== null ? { valid: true, z } : { valid: false }
+    }
+
+    /**
+     * Ищет ближайшую валидную позицию для drop.
+     * Используется когда пользователь отпускает груз в невалидной позиции.
+     */
+    function findDropPosition(id: string, x: number, y: number): DropPosition | null {
+        return engine.value.findNearestDropPosition(id, x, y)
+    }
+
+    /**
+     * Восстанавливает размещения из истории с сохранением координат.
+     */
+    function restorePlacements(placements: Placement[]): void {
+        engine.value.restorePlacements(placements)
+        sync()
+    }
+
     return {
         addFromTemplate,
         addFromTemplateAt,
@@ -282,5 +326,8 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
         rotatePlacement,
         optimize,
         canModify,
+        checkMovePosition,
+        findDropPosition,
+        restorePlacements,
     }
 }

@@ -82,10 +82,7 @@ function handleLoadFromHistory(item: PackingHistoryItem) {
 
     packing.resetContainer(item.container)
     packing.setMode(item.mode)
-
-    for (const p of item.placements) {
-        packing.addCustomItem(p)
-    }
+    packing.restorePlacements(item.placements)
 
     toast.info(`Загружена компоновка "${item.title}"`)
 }
@@ -219,6 +216,8 @@ onMounted(async () => {
           :onRemove="packing.removePlacement"
           :onRotate="packing.rotatePlacement"
           :onDropTemplate="handleDropCargoAt"
+          :checkMovePosition="packing.checkMovePosition"
+          :findDropPosition="packing.findDropPosition"
           :step="packing.step"
       />
       <PackingScene3D
@@ -282,6 +281,7 @@ onMounted(async () => {
   top: calc(var(--titlebar-height, 0px) + var(--spacing-sm));
   align-self: start;
   --scene-height: calc(100vh - var(--titlebar-height, 0px) - var(--spacing-sm) * 2);
+  padding: 0 var(--spacing-xl);
 }
 
 .scene3D {
@@ -306,6 +306,7 @@ onMounted(async () => {
     position: static;
     max-height: none;
     order: -1;
+    padding: 0;
   }
 
   .scene3D {

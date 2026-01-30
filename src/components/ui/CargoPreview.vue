@@ -36,11 +36,11 @@ const rect = computed(() => {
         :y="rect.y"
         :width="rect.w"
         :height="rect.h"
-        rx="2"
-        ry="2"
+        rx="4"
+        ry="4"
         :fill="color || '#bdbdbd'"
-        stroke="#333"
         stroke-width="1"
+        vector-effect="non-scaling-stroke"
     />
   </svg>
 </template>

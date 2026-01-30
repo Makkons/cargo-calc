@@ -132,6 +132,9 @@ export function usePacking(
         rotatePlacement: operations.rotatePlacement,
         optimize: operations.optimize,
         canModify: operations.canModify,
+        checkMovePosition: operations.checkMovePosition,
+        findDropPosition: operations.findDropPosition,
+        restorePlacements: operations.restorePlacements,
 
         // settings
         setMode,
