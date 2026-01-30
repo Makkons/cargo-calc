@@ -21,6 +21,7 @@ import { exportToPdf } from '@/utils/exportPdf'
 
 import type { CargoTemplate } from '@/data/templates/types'
 import type { PackingHistoryItem } from '@/data/history/types'
+import type { Placement } from '@/engine/types'
 
 /* =========================
    UI STATE
@@ -122,6 +123,32 @@ function showCargoResult(success: boolean, name: string) {
 }
 
 /* =========================
+   CARGO MODIFICATIONS
+========================= */
+
+function handleRotatePlacement(id: string) {
+    const result = packing.rotatePlacement(id)
+
+    if (!result.success) {
+        toast.error('Невозможно повернуть груз — нет места')
+        return
+    }
+}
+
+function handleEditPlacement(id: string, patch: Partial<Placement>) {
+    const result = packing.editPlacement(id, patch)
+
+    if (!result.success) {
+        toast.error('Невозможно изменить груз — нет места')
+        return
+    }
+
+    if (result.relocated) {
+        toast.info('Груз изменён и перемещён')
+    }
+}
+
+/* =========================
    PDF EXPORT
 ========================= */
 
@@ -133,6 +160,7 @@ async function handleExportPdf() {
             title: session.title.value,
             comment: session.comment.value,
             shippingDate: session.shippingDate.value,
+            containerName: containers.active.value!.name,
             container: containers.active.value!.container,
             placements: toRaw(packing.placements.value).map(p => ({ ...toRaw(p) })),
             fill: isProMode.value ? packing.volumeFill.value : packing.floorFill.value,
@@ -195,9 +223,9 @@ onMounted(async () => {
           :showAddCargo="isProMode"
           :onSave="handleSave"
           :onSetMode="packing.setMode"
-          :onRotate="packing.rotatePlacement"
+          :onRotate="handleRotatePlacement"
           :onRemove="packing.removePlacement"
-          :onEdit="packing.editPlacement"
+          :onEdit="handleEditPlacement"
           :onOptimize="packing.optimize"
           :onAddCustom="handleAddCustomCargo"
           :onExportPdf="handleExportPdf"
@@ -214,7 +242,7 @@ onMounted(async () => {
           :canModify="packing.canModify"
           :onMove="packing.movePlacement"
           :onRemove="packing.removePlacement"
-          :onRotate="packing.rotatePlacement"
+          :onRotate="handleRotatePlacement"
           :onDropTemplate="handleDropCargoAt"
           :checkMovePosition="packing.checkMovePosition"
           :findDropPosition="packing.findDropPosition"

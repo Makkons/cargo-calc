@@ -7,6 +7,7 @@ export interface PdfExportData {
   title: string
   comment?: string
   shippingDate?: string
+  containerName?: string
   container: Container
   placements: Placement[]
   /** Значение заполнения (0-1) */
@@ -40,8 +41,14 @@ function createDataPage(data: PdfExportData): HTMLElement {
   const now = new Date()
   const createdAt = now.toLocaleString('ru-RU')
 
+  // Сортируем грузы по позиции: сначала по Y, затем по X
+  const sortedPlacements = [...data.placements].sort((a, b) => {
+    if (a.y !== b.y) return a.y - b.y
+    return a.x - b.x
+  })
+
   // Строки таблицы грузов с цветовыми индикаторами
-  const rows = data.placements.map(p => {
+  const rows = sortedPlacements.map(p => {
     const color = p.color || '#9e9e9e'
     return `
       <tr style="border-bottom: 1px solid #e5e7eb;">
@@ -53,7 +60,6 @@ function createDataPage(data: PdfExportData): HTMLElement {
         </td>
         <td style="padding: 8px 12px; font-size: 13px;">${p.width} × ${p.length} × ${p.height}</td>
         <td style="padding: 8px 12px; font-size: 13px;">${p.weight ? p.weight + ' кг' : '—'}</td>
-        <td style="padding: 8px 12px; font-size: 13px; color: #6b7280;">${p.x}, ${p.y}, ${p.z}</td>
       </tr>
     `
   }).join('')
@@ -68,10 +74,10 @@ function createDataPage(data: PdfExportData): HTMLElement {
     </div>
 
     <div style="margin-bottom: 20px; padding: 12px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
-      <div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">Контейнер</div>
+      <div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">${data.containerName || 'Машина'}</div>
       <div style="font-size: 13px; color: #374151;">
         <div>Размеры: ${data.container.width} × ${data.container.length} × ${data.container.height} см</div>
-        <div>${data.fillLabel}: ${Math.round(data.fill * 100)}%</div>
+        <div>${data.fillLabel} заполнения: ${Math.round(data.fill * 100)}%</div>
         ${data.usedWeight > 0 ? `<div>Общий вес: ${data.usedWeight} кг</div>` : ''}
       </div>
     </div>
@@ -84,7 +90,6 @@ function createDataPage(data: PdfExportData): HTMLElement {
             <th style="padding: 8px 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151;">Название</th>
             <th style="padding: 8px 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151;">Размеры (Ш×Д×В)</th>
             <th style="padding: 8px 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151;">Вес</th>
-            <th style="padding: 8px 12px; text-align: left; font-size: 12px; font-weight: 600; color: #374151;">Позиция</th>
           </tr>
         </thead>
         <tbody>

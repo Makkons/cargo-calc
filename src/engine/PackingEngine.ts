@@ -5,7 +5,8 @@ import type {
     EngineState,
     FindPlacementOptions,
     PlacementProvider,
-    HeightMapProvider
+    HeightMapProvider,
+    PlacementUpdateResult
 } from './types'
 import { HeightMap } from './HeightMap'
 import { PlacementValidator } from './PlacementValidator'
@@ -532,12 +533,190 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
             return null
         }
 
-        // Применяем новое размещение
+        // Применяем новое размещение на ту же позицию в массиве
         const moved: Placement = { ...original, x, y, z }
-        this.placements.push(moved)
+        this.placements.splice(index, 0, moved)
         this.rebuildHeightMap()
 
         return moved
+    }
+
+    /**
+     * Обновляет свойства груза.
+     * Если изменяются габариты — проверяет что груз влезает в текущей позиции.
+     * При allowRelocate=true ищет ближайшую позицию если не влезает на месте.
+     *
+     * @param allowRelocate - разрешить перемещение если не влезает на месте
+     * @returns результат с обновлённым placement и флагом relocated
+     */
+    updatePlacement(
+        id: string,
+        patch: Partial<Pick<Placement, 'name' | 'color' | 'weight' | 'width' | 'length' | 'height' | 'fragile'>>,
+        allowRelocate: boolean = false
+    ): PlacementUpdateResult {
+        const fail = { placement: null, relocated: false }
+
+        const original = this.getPlacementById(id)
+        if (!original) return fail
+
+        if (!this.validator.canModify(original)) {
+            return fail
+        }
+
+        const index = this.placements.findIndex(p => p.id === id)
+
+        // Проверяем изменились ли габариты
+        const newWidth = patch.width ?? original.width
+        const newLength = patch.length ?? original.length
+        const newHeight = patch.height ?? original.height
+        const geometryChanged = newWidth !== original.width ||
+                               newLength !== original.length ||
+                               newHeight !== original.height
+
+        if (geometryChanged) {
+            this.commit()
+
+            // Временно убираем placement для проверки
+            this.placements.splice(index, 1)
+            this.rebuildHeightMap()
+
+            // Создаём шаблон с новыми габаритами
+            const template: CargoTemplate = {
+                ...this.toTemplate(original),
+                width: newWidth,
+                length: newLength,
+                height: newHeight,
+            }
+
+            // 1. Пробуем на текущем месте
+            let z = this.canPlaceAt(template, original.x, original.y)
+            let newX = original.x
+            let newY = original.y
+            let relocated = false
+
+            // 2. Если не влезает и разрешён relocate — ищем ближайшую позицию
+            if (z === null && allowRelocate) {
+                // Радиус поиска должен покрывать разницу размеров
+                const widthDiff = Math.abs(newWidth - original.width)
+                const lengthDiff = Math.abs(newLength - original.length)
+                const searchRadius = Math.max(300, widthDiff + lengthDiff + 100)
+
+                const nearest = this.findNearestPlacePosition(template, original.x, original.y, searchRadius)
+                if (nearest) {
+                    newX = nearest.x
+                    newY = nearest.y
+                    z = nearest.z
+                    relocated = true
+                }
+            }
+
+            if (z === null) {
+                // Не влезает нигде — откат
+                this.placements.splice(index, 0, original)
+                this.rebuildHeightMap()
+                return fail
+            }
+
+            // Применяем обновлённый placement
+            const updated: Placement = {
+                ...original,
+                ...patch,
+                x: newX,
+                y: newY,
+                z,
+            }
+            this.placements.splice(index, 0, updated)
+            this.rebuildHeightMap()
+
+            return { placement: updated, relocated }
+        }
+
+        // Габариты не изменились — просто обновляем метаданные
+        this.commit()
+        const updated: Placement = { ...original, ...patch }
+        this.placements[index] = updated
+
+        return { placement: updated, relocated: false }
+    }
+
+    /**
+     * Поворачивает груз (swap width/length).
+     * Проверяет что повёрнутый груз влезает в текущей позиции.
+     * При allowRelocate=true ищет ближайшую позицию если не влезает на месте.
+     *
+     * @param allowRelocate - разрешить перемещение если не влезает на месте
+     * @returns результат с обновлённым placement и флагом relocated
+     */
+    rotatePlacement(id: string, allowRelocate: boolean = false): PlacementUpdateResult {
+        const fail = { placement: null, relocated: false }
+
+        const original = this.getPlacementById(id)
+        if (!original) return fail
+
+        if (!this.validator.canModify(original)) {
+            return fail
+        }
+
+        // Если width === length, поворот ничего не меняет
+        if (original.width === original.length) {
+            return { placement: original, relocated: false }
+        }
+
+        const index = this.placements.findIndex(p => p.id === id)
+
+        this.commit()
+
+        // Временно убираем placement
+        this.placements.splice(index, 1)
+        this.rebuildHeightMap()
+
+        // Создаём повёрнутый шаблон
+        const rotatedTemplate: CargoTemplate = {
+            ...this.toTemplate(original),
+            width: original.length,
+            length: original.width,
+        }
+
+        // 1. Пробуем на текущем месте
+        let z = this.canPlaceAt(rotatedTemplate, original.x, original.y)
+        let newX = original.x
+        let newY = original.y
+        let relocated = false
+
+        // 2. Если не влезает и разрешён relocate — ищем ближайшую позицию
+        if (z === null && allowRelocate) {
+            // Радиус поиска должен покрывать разницу размеров при повороте
+            const sizeDiff = Math.abs(original.width - original.length)
+            const searchRadius = Math.max(300, sizeDiff + 100)
+
+            const nearest = this.findNearestPlacePosition(rotatedTemplate, original.x, original.y, searchRadius)
+            if (nearest) {
+                newX = nearest.x
+                newY = nearest.y
+                z = nearest.z
+                relocated = true
+            }
+        }
+
+        if (z === null) {
+            // Не влезает нигде — откат
+            this.placements.splice(index, 0, original)
+            return fail
+        }
+
+        // Применяем повёрнутый placement
+        const rotated: Placement = {
+            ...original,
+            width: original.length,
+            length: original.width,
+            x: newX,
+            y: newY,
+            z,
+        }
+        this.placements.splice(index, 0, rotated)
+        this.rebuildHeightMap()
+
+        return { placement: rotated, relocated }
     }
 
     /**

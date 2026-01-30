@@ -26,14 +26,21 @@ export interface DropPosition {
     z: number
 }
 
+/** Результат операции редактирования/поворота */
+export interface ModifyResult {
+    success: boolean
+    /** true если груз был перемещён на другую позицию */
+    relocated: boolean
+}
+
 export interface PackingOperations {
     addFromTemplate: (template: CargoTemplate) => boolean
     addFromTemplateAt: (template: CargoTemplate, x: number, y: number) => boolean
     addCustomItem: (item: CustomItemInput) => boolean
     removePlacement: (id: string) => boolean
-    editPlacement: (id: string, patch: Partial<Placement>) => boolean
+    editPlacement: (id: string, patch: Partial<Placement>) => ModifyResult
     movePlacement: (id: string, x: number, y: number) => Placement | null
-    rotatePlacement: (id: string) => boolean
+    rotatePlacement: (id: string) => ModifyResult
     optimize: () => boolean
     canModify: (id: string) => boolean
     /** Проверяет возможность перемещения БЕЗ реального перемещения (для drag preview) */
@@ -149,36 +156,15 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
         return ok
     }
 
-    function editPlacement(id: string, patch: Partial<Placement>): boolean {
-        if (!canModify(id)) return false
+    function editPlacement(id: string, patch: Partial<Placement>): ModifyResult {
+        const result = engine.value.updatePlacement(id, patch, true) // allowRelocate=true
 
-        const old = engine.value.getPlacements().find(p => p.id === id)
-        if (!old) return false
+        if (result.placement) {
+            sync()
+            return { success: true, relocated: result.relocated }
+        }
 
-        executor.value.execute({
-            type: 'removePlacement',
-            placementId: id,
-        })
-
-        executor.value.execute({
-            type: 'addItem',
-            template: {
-                id: crypto.randomUUID(),
-                templateId: old.templateId,
-                name: patch.name ?? old.name,
-                color: patch.color ?? old.color,
-                weight: patch.weight ?? old.weight,
-                width: patch.width ?? old.width,
-                length: patch.length ?? old.length,
-                height: patch.height ?? old.height,
-                fragile: patch.fragile ?? old.fragile,
-            },
-            mode: mode.value,
-            floorOnly: floorOnly.value,
-        })
-
-        sync()
-        return true
+        return { success: false, relocated: false }
     }
 
     function movePlacement(id: string, x: number, y: number): Placement | null {
@@ -192,62 +178,15 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
         return null
     }
 
-    function rotatePlacement(id: string): boolean {
-        if (!canModify(id)) return false
+    function rotatePlacement(id: string): ModifyResult {
+        const result = engine.value.rotatePlacement(id, true) // allowRelocate=true
 
-        const p = engine.value.getPlacements().find(p => p.id === id)
-        if (!p) return false
-
-        // 1. удаляем
-        const removed = executor.value.execute({
-            type: 'removePlacement',
-            placementId: id,
-        }).ok
-
-        if (!removed) return false
-
-        // 2. добавляем повернутый (swap width/length)
-        const added = executor.value.execute({
-            type: 'addItem',
-            template: {
-                id: crypto.randomUUID(),
-                templateId: p.templateId,
-                width: p.length,
-                length: p.width,
-                height: p.height,
-                fragile: p.fragile,
-                weight: p.weight,
-                color: p.color,
-                name: p.name,
-            },
-            mode: mode.value,
-            floorOnly: floorOnly.value,
-        }).ok
-
-        // 3. если не влез — откат
-        if (!added) {
-            executor.value.execute({
-                type: 'addItem',
-                template: {
-                    id: crypto.randomUUID(),
-                    templateId: p.templateId,
-                    width: p.width,
-                    length: p.length,
-                    height: p.height,
-                    fragile: p.fragile,
-                    weight: p.weight,
-                    color: p.color,
-                    name: p.name,
-                },
-                mode: mode.value,
-                floorOnly: floorOnly.value,
-            })
+        if (result.placement) {
             sync()
-            return false
+            return { success: true, relocated: result.relocated }
         }
 
-        sync()
-        return true
+        return { success: false, relocated: false }
     }
 
     function optimize(): boolean {

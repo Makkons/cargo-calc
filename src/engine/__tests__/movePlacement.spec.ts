@@ -61,4 +61,49 @@ describe('PackingEngine.movePlacement', () => {
         expect(movedTop!.x).toBe(50)
         expect(engine.getPlacements().length).toBe(2)
     })
+
+    it('preserves placement order in array after move', () => {
+        const largeContainer = { width: 1000, length: 1000, height: 100 }
+        const engine = new PackingEngine(largeContainer, 10)
+
+        // Add 3 placements
+        engine.addItemAt({ id: 'a', width: 100, length: 100, height: 50, fragile: false }, 0, 0)
+        engine.addItemAt({ id: 'b', width: 100, length: 100, height: 50, fragile: false }, 200, 0)
+        engine.addItemAt({ id: 'c', width: 100, length: 100, height: 50, fragile: false }, 400, 0)
+
+        const placementB = engine.getPlacements()[1]
+        expect(placementB.x).toBe(200)
+
+        // Move middle placement
+        const moved = engine.movePlacement(placementB.id, 300, 0)
+
+        expect(moved).not.toBeNull()
+        expect(moved!.x).toBe(300)
+
+        // Order should be preserved: a, b, c
+        const placements = engine.getPlacements()
+        expect(placements.length).toBe(3)
+        expect(placements[0].x).toBe(0)   // a - unchanged
+        expect(placements[1].x).toBe(300) // b - moved but still second
+        expect(placements[2].x).toBe(400) // c - unchanged
+    })
+
+    it('preserves placement ID after move', () => {
+        const largeContainer = { width: 1000, length: 1000, height: 100 }
+        const engine = new PackingEngine(largeContainer, 10)
+
+        const original = engine.addItemAt({
+            id: 'my-cargo',
+            width: 100,
+            length: 100,
+            height: 50,
+            fragile: false,
+        }, 0, 0)
+
+        const moved = engine.movePlacement(original!.id, 500, 500)
+
+        expect(moved).not.toBeNull()
+        expect(moved!.id).toBe(original!.id) // Same ID
+        expect(engine.getPlacements()[0].id).toBe(original!.id)
+    })
 })

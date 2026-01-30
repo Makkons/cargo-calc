@@ -103,6 +103,21 @@ const currentFill = computed(() =>
 const fillLabel = computed(() =>
     props.isProMode ? 'Объём' : 'Площадь'
 )
+
+/**
+ * Грузы отсортированные по позиции в контейнере:
+ * - Сначала по Y (от начала контейнера к концу)
+ * - При равном Y - по X (слева направо)
+ *
+ * Это соответствует порядку чтения и упрощает сопоставление
+ * списка с 2D сценой и PDF.
+ */
+const sortedPlacements = computed(() =>
+    [...props.placements].sort((a, b) => {
+        if (a.y !== b.y) return a.y - b.y
+        return a.x - b.x
+    })
+)
 </script>
 
 <template>
@@ -156,7 +171,7 @@ const fillLabel = computed(() =>
     </div>
 
     <div
-        v-for="p in placements"
+        v-for="p in sortedPlacements"
         :key="p.id"
         class="packing-item"
         :class="{ 'packing-item--highlighted': highlightedId === p.id }"

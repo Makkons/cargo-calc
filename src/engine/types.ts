@@ -71,6 +71,16 @@ export interface CandidatePosition {
 }
 
 /**
+ * Результат обновления груза (edit/rotate)
+ */
+export interface PlacementUpdateResult {
+    /** Обновлённый груз или null если обновление невозможно */
+    placement: Placement | null
+    /** true если груз был перемещён на другую позицию */
+    relocated: boolean
+}
+
+/**
  * Интерфейс для доступа к размещениям (read-only)
  */
 export interface PlacementProvider {
