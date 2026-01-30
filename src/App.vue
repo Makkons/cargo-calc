@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, toRaw, onMounted } from 'vue'
+import { ref, watch, toRaw, onMounted, markRaw } from 'vue'
 
 import CargoTemplates from '@/components/CargoTemplates.vue'
 import ContainerTemplates from '@/components/ContainerTemplates.vue'
@@ -7,9 +7,12 @@ import PackingList from '@/components/PackingList.vue'
 import PackingScene3D from '@/components/PackingScene3D.vue'
 import PackingScene2D from '@/components/PackingScene2D.vue'
 import PackingHistory from '@/components/PackingHistory.vue'
-import AsideBar from '@/components/AsideBar.vue'
+import AsideBar, { type AsideTab } from '@/components/AsideBar.vue'
 import ToastContainer from '@/components/ui/ToastContainer.vue'
 import DragGhost from '@/components/ui/DragGhost.vue'
+
+import BookIcon from '@/assets/icon/book.svg'
+import SettingsIcon from '@/assets/icon/settings.svg'
 
 import { usePacking } from '@/domain/packing/usePacking'
 import { useToast } from '@/composables/useToast'
@@ -28,7 +31,13 @@ import type { Placement } from '@/engine/types'
 ========================= */
 
 const isAsideOpen = ref(false)
-const asideTab = ref<'history' | 'settings'>('history')
+const asideTab = ref('history')
+
+/** Конфигурация вкладок бокового меню */
+const asideTabs: AsideTab[] = [
+  { id: 'history', icon: markRaw(BookIcon), label: 'История' },
+  { id: 'settings', icon: markRaw(SettingsIcon), label: 'Настройки' },
+]
 const isProMode = ref(false)
 const sceneRef = ref<InstanceType<typeof PackingScene2D> | null>(null)
 
@@ -257,8 +266,8 @@ onMounted(async () => {
 
     <AsideBar
         v-model:open="isAsideOpen"
-        :activeTab="asideTab"
-        @set-tab="asideTab = $event"
+        v-model:activeTab="asideTab"
+        :tabs="asideTabs"
         v-slot="{ activeTab }"
     >
       <PackingHistory

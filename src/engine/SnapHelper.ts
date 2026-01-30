@@ -1,4 +1,5 @@
 import type { Placement, Container } from './types'
+import { snapToGrid, SNAP_THRESHOLD, SNAP_BREAKAWAY } from './constants'
 
 export interface SnapResult {
     x: number
@@ -29,8 +30,8 @@ export class SnapHelper {
     constructor(
         private readonly container: Container,
         private readonly step: number,
-        private readonly threshold: number = 30,    // Расстояние притягивания
-        private readonly breakaway: number = 45     // Расстояние отлипания (> threshold)
+        private readonly threshold: number = SNAP_THRESHOLD,
+        private readonly breakaway: number = SNAP_BREAKAWAY
     ) {}
 
     /**
@@ -128,7 +129,7 @@ export class SnapHelper {
             return { position: bestSnap.position, snapped: true }
         }
 
-        return { position: this.snapToGrid(rawPos), snapped: false }
+        return { position: snapToGrid(rawPos, this.step), snapped: false }
     }
 
     /**
@@ -161,12 +162,5 @@ export class SnapHelper {
         }
 
         return edges
-    }
-
-    /**
-     * Snap к сетке
-     */
-    private snapToGrid(value: number): number {
-        return Math.round(value / this.step) * this.step
     }
 }

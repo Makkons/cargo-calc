@@ -9,6 +9,8 @@ import type {
 } from './types'
 import type { PlacementValidator } from './PlacementValidator'
 import { scoreUniform, scoreDense } from './scoring'
+import { createPlacement } from './PlacementFactory'
+import { snapToGrid } from './constants'
 
 /**
  * PositionFinder - поиск оптимальной позиции для груза
@@ -57,7 +59,7 @@ export class PositionFinder {
 
             if (best === null || score < bestScore!) {
                 bestScore = score
-                best = this.createPlacement(template, x, y, z)
+                best = createPlacement(template, x, y, z, crypto.randomUUID())
             }
         }
 
@@ -79,8 +81,8 @@ export class PositionFinder {
 
         const addCandidate = (x: number, y: number) => {
             // Snap к сетке
-            const sx = Math.round(x / this.step) * this.step
-            const sy = Math.round(y / this.step) * this.step
+            const sx = snapToGrid(x, this.step)
+            const sy = snapToGrid(y, this.step)
 
             // Проверяем границы с учётом размеров груза
             if (sx < 0 || sy < 0) return
@@ -130,31 +132,5 @@ export class PositionFinder {
         return mode === 'uniform'
             ? scoreUniform(cells, z)
             : scoreDense(cells, z)
-    }
-
-    /**
-     * Создаёт объект Placement (без сохранения в engine)
-     */
-    private createPlacement(
-        template: ItemTemplate,
-        x: number,
-        y: number,
-        z: number
-    ): Placement {
-        return {
-            id: crypto.randomUUID(),
-            templateId: template.templateId,
-            name: (template as { name?: string }).name ?? '',
-            color: (template as { color?: string }).color ?? '#9e9e9e',
-            weight: (template as { weight?: number }).weight,
-            width: template.width,
-            length: template.length,
-            height: template.height,
-            x,
-            y,
-            z,
-            fragile: template.fragile ?? false,
-            locked: false,
-        }
     }
 }

@@ -11,6 +11,8 @@ import type {
 import { HeightMap } from './HeightMap'
 import { PlacementValidator } from './PlacementValidator'
 import { PositionFinder } from './PositionFinder'
+import { createPlacement } from './PlacementFactory'
+import { snapToGrid, DEFAULT_SEARCH_RADIUS } from './constants'
 
 /**
  * PackingEngine - координатор операций с грузами
@@ -133,7 +135,7 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         const z = this.canPlaceAt(template, x, y)
         if (z === null) return null
 
-        const placement = this.createPlacement(template, x, y, z)
+        const placement = createPlacement(template, x, y, z)
 
         this.commit()
         this.applyPlacement(placement)
@@ -149,7 +151,7 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         template: ItemTemplate,
         x: number,
         y: number,
-        maxRadius: number = 300
+        maxRadius: number = DEFAULT_SEARCH_RADIUS
     ): Placement | null {
         // Сначала пробуем точную позицию
         const direct = this.addItemAt(template, x, y)
@@ -164,15 +166,116 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
 
     /**
      * Ищет ближайшую валидную позицию для НОВОГО груза.
-     * Аналог findNearestDropPosition, но без удаления существующего груза.
      */
     findNearestPlacePosition(
         template: ItemTemplate,
         targetX: number,
         targetY: number,
-        maxRadius: number = 300
+        maxRadius: number = DEFAULT_SEARCH_RADIUS
     ): { x: number; y: number; z: number } | null {
-        const snap = (v: number) => Math.round(v / this.step) * this.step
+        return this.findNearestPositionCore(template, targetX, targetY, maxRadius)
+    }
+
+    /**
+     * Удаляет груз (только если сверху ничего нет и не заблокирован)
+     */
+    removePlacement(id: string): boolean {
+        const placement = this.getPlacementById(id)
+        if (!placement) return false
+
+        if (!this.validator.canModify(placement)) {
+            return false
+        }
+
+        const index = this.placements.findIndex(p => p.id === id)
+
+        this.commit()
+        this.placements.splice(index, 1)
+        this.rebuildHeightMap()
+
+        return true
+    }
+
+    /**
+     * Проверяет, можно ли переместить груз в позицию (x, y) БЕЗ реального перемещения.
+     * Используется для валидации во время drag-and-drop.
+     *
+     * @returns z-координата если можно, null если нельзя
+     */
+    canMoveToPosition(id: string, x: number, y: number): number | null {
+        const placement = this.getPlacementById(id)
+        if (!placement) return null
+
+        if (!this.validator.canModify(placement)) {
+            return null
+        }
+
+        const index = this.placements.indexOf(placement)
+
+        // Временно убираем placement (БЕЗ commit)
+        this.placements.splice(index, 1)
+        this.rebuildHeightMap()
+
+        const z = this.canPlaceAt(this.toTemplate(placement), x, y)
+
+        // Восстанавливаем (БЕЗ commit)
+        this.placements.splice(index, 0, placement)
+        this.rebuildHeightMap()
+
+        return z
+    }
+
+    /**
+     * Ищет ближайшую валидную позицию для перемещения существующего груза.
+     * Временно убирает груз из placements для корректного поиска.
+     */
+    findNearestDropPosition(
+        id: string,
+        targetX: number,
+        targetY: number,
+        maxRadius: number = DEFAULT_SEARCH_RADIUS
+    ): { x: number; y: number; z: number } | null {
+        const placement = this.getPlacementById(id)
+        if (!placement) return null
+
+        if (!this.validator.canModify(placement)) {
+            return null
+        }
+
+        const index = this.placements.indexOf(placement)
+        const template = this.toTemplate(placement)
+
+        // Временно убираем груз для корректного поиска
+        this.placements.splice(index, 1)
+        this.rebuildHeightMap()
+
+        const result = this.findNearestPositionCore(template, targetX, targetY, maxRadius)
+
+        // Восстанавливаем груз
+        this.placements.splice(index, 0, placement)
+        this.rebuildHeightMap()
+
+        return result
+    }
+
+    /**
+     * Общая логика поиска ближайшей валидной позиции.
+     *
+     * Алгоритм (с приоритетами):
+     * 1. Проверяем целевую позицию
+     * 2. Ищем позиции вплотную к грузам, которые ПЕРЕСЕКАЮТСЯ с target
+     * 3. Ищем позиции вплотную к остальным ближайшим грузам
+     * 4. Fallback: поиск по сетке
+     *
+     * Используем Евклидово расстояние для интуитивной сортировки.
+     */
+    private findNearestPositionCore(
+        template: ItemTemplate,
+        targetX: number,
+        targetY: number,
+        maxRadius: number
+    ): { x: number; y: number; z: number } | null {
+        const snap = (v: number) => snapToGrid(v, this.step)
         const snappedX = snap(targetX)
         const snappedY = snap(targetY)
 
@@ -234,159 +337,6 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         }
 
         return null
-    }
-
-    /**
-     * Удаляет груз (только если сверху ничего нет и не заблокирован)
-     */
-    removePlacement(id: string): boolean {
-        const placement = this.getPlacementById(id)
-        if (!placement) return false
-
-        if (!this.validator.canModify(placement)) {
-            return false
-        }
-
-        const index = this.placements.findIndex(p => p.id === id)
-
-        this.commit()
-        this.placements.splice(index, 1)
-        this.rebuildHeightMap()
-
-        return true
-    }
-
-    /**
-     * Проверяет, можно ли переместить груз в позицию (x, y) БЕЗ реального перемещения.
-     * Используется для валидации во время drag-and-drop.
-     *
-     * @returns z-координата если можно, null если нельзя
-     */
-    canMoveToPosition(id: string, x: number, y: number): number | null {
-        const placement = this.getPlacementById(id)
-        if (!placement) return null
-
-        if (!this.validator.canModify(placement)) {
-            return null
-        }
-
-        const index = this.placements.indexOf(placement)
-
-        // Временно убираем placement (БЕЗ commit)
-        this.placements.splice(index, 1)
-        this.rebuildHeightMap()
-
-        const z = this.canPlaceAt(this.toTemplate(placement), x, y)
-
-        // Восстанавливаем (БЕЗ commit)
-        this.placements.splice(index, 0, placement)
-        this.rebuildHeightMap()
-
-        return z
-    }
-
-    /**
-     * Ищет ближайшую валидную позицию для перемещения груза.
-     *
-     * Алгоритм (с приоритетами):
-     * 1. Проверяем целевую позицию
-     * 2. Ищем позиции вплотную к грузам, которые ПЕРЕСЕКАЮТСЯ с target (высший приоритет)
-     * 3. Ищем позиции вплотную к остальным ближайшим грузам
-     * 4. Fallback: поиск по сетке (включая границы контейнера)
-     *
-     * Используем Евклидово расстояние для более интуитивной сортировки.
-     */
-    findNearestDropPosition(
-        id: string,
-        targetX: number,
-        targetY: number,
-        maxRadius: number = 300
-    ): { x: number; y: number; z: number } | null {
-        const placement = this.getPlacementById(id)
-        if (!placement) return null
-
-        if (!this.validator.canModify(placement)) {
-            return null
-        }
-
-        const index = this.placements.indexOf(placement)
-
-        // Snap к сетке
-        const snap = (v: number) => Math.round(v / this.step) * this.step
-        const snappedX = snap(targetX)
-        const snappedY = snap(targetY)
-
-        const template = this.toTemplate(placement)
-
-        // === ОДИН rebuild: убираем груз ===
-        this.placements.splice(index, 1)
-        this.rebuildHeightMap()
-
-        // Евклидово расстояние
-        const euclidean = (x: number, y: number) =>
-            Math.sqrt((x - snappedX) ** 2 + (y - snappedY) ** 2)
-
-        try {
-            // 1. Проверяем целевую точку
-            const z = this.canPlaceAt(template, snappedX, snappedY)
-            if (z !== null) {
-                return { x: snappedX, y: snappedY, z }
-            }
-
-            // 2. Находим груз(ы) которые пересекаются с target (на которые бросили)
-            const overlapping = this.findOverlappingPlacements(
-                snappedX, snappedY, template.width, template.length
-            )
-
-            // 3. Приоритет 1: позиции вплотную к пересекающимся грузам
-            if (overlapping.length > 0) {
-                const priorityPositions = this.getAdjacentPositions(
-                    template, snappedX, snappedY, overlapping, snap
-                )
-                priorityPositions.sort((a, b) => euclidean(a.x, a.y) - euclidean(b.x, b.y))
-
-                for (const pos of priorityPositions) {
-                    const z = this.canPlaceAt(template, pos.x, pos.y)
-                    if (z !== null) {
-                        return { x: pos.x, y: pos.y, z }
-                    }
-                }
-            }
-
-            // 4. Приоритет 2: позиции вплотную к другим ближайшим грузам
-            const nearbyPlacements = this.placements.filter(p => !overlapping.includes(p))
-            const nearbyPositions = this.getAdjacentPositions(
-                template, snappedX, snappedY, nearbyPlacements, snap, maxRadius
-            )
-            nearbyPositions.sort((a, b) => euclidean(a.x, a.y) - euclidean(b.x, b.y))
-
-            for (const pos of nearbyPositions) {
-                const z = this.canPlaceAt(template, pos.x, pos.y)
-                if (z !== null) {
-                    return { x: pos.x, y: pos.y, z }
-                }
-            }
-
-            // 5. Fallback: поиск по сетке
-            const gridPositions = this.getGridPositions(snappedX, snappedY, maxRadius)
-
-            for (const pos of gridPositions) {
-                if (pos.x < 0 || pos.y < 0) continue
-                if (pos.x + template.width > this.container.width) continue
-                if (pos.y + template.length > this.container.length) continue
-
-                const z = this.canPlaceAt(template, pos.x, pos.y)
-                if (z !== null) {
-                    return { x: pos.x, y: pos.y, z }
-                }
-            }
-
-            return null
-        } finally {
-            // === ОДИН rebuild: возвращаем груз ===
-            this.placements.splice(index, 0, placement)
-            this.rebuildHeightMap()
-        }
     }
 
     /**
@@ -599,7 +549,7 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
                 // Радиус поиска должен покрывать разницу размеров
                 const widthDiff = Math.abs(newWidth - original.width)
                 const lengthDiff = Math.abs(newLength - original.length)
-                const searchRadius = Math.max(300, widthDiff + lengthDiff + 100)
+                const searchRadius = Math.max(DEFAULT_SEARCH_RADIUS, widthDiff + lengthDiff + 100)
 
                 const nearest = this.findNearestPlacePosition(template, original.x, original.y, searchRadius)
                 if (nearest) {
@@ -687,7 +637,7 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         if (z === null && allowRelocate) {
             // Радиус поиска должен покрывать разницу размеров при повороте
             const sizeDiff = Math.abs(original.width - original.length)
-            const searchRadius = Math.max(300, sizeDiff + 100)
+            const searchRadius = Math.max(DEFAULT_SEARCH_RADIUS, sizeDiff + 100)
 
             const nearest = this.findNearestPlacePosition(rotatedTemplate, original.x, original.y, searchRadius)
             if (nearest) {
@@ -813,29 +763,6 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
             length: p.length,
             height: p.height,
             fragile: p.fragile,
-        }
-    }
-
-    private createPlacement(
-        template: ItemTemplate,
-        x: number,
-        y: number,
-        z: number
-    ): Placement {
-        return {
-            id: template.id,
-            templateId: template.templateId,
-            name: (template as { name?: string }).name ?? '',
-            color: (template as { color?: string }).color ?? '#9e9e9e',
-            weight: (template as { weight?: number }).weight,
-            width: template.width,
-            length: template.length,
-            height: template.height,
-            x,
-            y,
-            z,
-            fragile: template.fragile ?? false,
-            locked: false,
         }
     }
 

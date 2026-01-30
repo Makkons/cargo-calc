@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import type { Placement, Container } from '@/engine/types'
 import type { CargoTemplate } from '@/data/templates/types'
 import { SnapHelper } from '@/engine/SnapHelper'
+import { snapToGrid, SNAP_THRESHOLD, SNAP_BREAKAWAY } from '@/engine/constants'
 import { useDragTemplate } from '@/composables/useDragTemplate'
 import { useHighlightedPlacement } from '@/composables/useHighlightedPlacement'
 import Car from '@/assets/images/car.png'
@@ -65,7 +66,7 @@ const dragState = ref<{
 let snapHelper: SnapHelper | null = null
 function getSnapHelper(): SnapHelper {
   if (!snapHelper) {
-    snapHelper = new SnapHelper(props.container, props.step, 30, 45)
+    snapHelper = new SnapHelper(props.container, props.step, SNAP_THRESHOLD, SNAP_BREAKAWAY)
   }
   return snapHelper
 }
@@ -74,8 +75,8 @@ function getSnapHelper(): SnapHelper {
    UTILS
 ========================= */
 
-function snapToGrid(value: number): number {
-  return Math.round(value / props.step) * props.step
+function snap(value: number): number {
+  return snapToGrid(value, props.step)
 }
 
 function getPlacement(id: string): Placement | null {
