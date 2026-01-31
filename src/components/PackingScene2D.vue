@@ -6,6 +6,8 @@ import { SnapHelper } from '@/engine/SnapHelper'
 import { snapToGrid, SNAP_THRESHOLD, SNAP_BREAKAWAY } from '@/engine/constants'
 import { useDragTemplate } from '@/composables/useDragTemplate'
 import { useHighlightedPlacement } from '@/composables/useHighlightedPlacement'
+import { useWeightBalance } from '@/domain/packing/useWeightBalance'
+import Tooltip from '@/components/ui/Tooltip.vue'
 import Car from '@/assets/images/car.png'
 
 const { draggingTemplate, isDragging, stopDrag, setHideGhost } = useDragTemplate()
@@ -29,6 +31,64 @@ const props = defineProps<{
   findDropPosition: (id: string, x: number, y: number) => DropPosition | null
   step: number
 }>()
+
+/* =========================
+   WEIGHT BALANCE
+========================= */
+
+const placementsRef = computed(() => props.placements)
+const weightBalance = useWeightBalance(props.container, placementsRef)
+
+/** Позиция маркера баланса (0-100%) */
+const balanceMarkerPosition = computed(() => {
+  return ((weightBalance.deviation.value + 1) / 2) * 100
+})
+
+/**
+ * Динамический градиент фона truck-doors.
+ * Краснеет в сторону перегруза, нейтральный при балансе.
+ *
+ * Всегда возвращаем градиент одинаковой структуры для плавной анимации.
+ */
+const balanceGradientStyle = computed(() => {
+  const baseColor = '#dddeeb'
+  const deviation = weightBalance.deviation.value
+  const hasItems = weightBalance.hasWeightedItems.value
+
+  // Интенсивность красного (0 если нет грузов или баланс идеальный)
+  const intensity = hasItems ? Math.min(Math.abs(deviation) * 1.5, 1) : 0
+  const red = `rgba(244, 67, 54, ${intensity})`
+
+  // Всегда градиент с 4 точками — для плавных переходов
+  // Направление зависит от стороны перегруза
+  const isLeft = deviation < 0
+
+  return {
+    background: `linear-gradient(to ${isLeft ? 'right' : 'left'}, ${red} 0%, ${baseColor} 50%, ${baseColor} 50%, ${baseColor} 100%)`
+  }
+})
+
+/** Текст для tooltip баланса */
+const balanceTooltipText = computed(() => {
+  if (!weightBalance.hasWeightedItems.value) {
+    return 'Добавьте грузы с указанным весом'
+  }
+
+  const percent = Math.abs(weightBalance.deviation.value * 100).toFixed(0)
+  const direction = weightBalance.deviation.value < 0 ? 'влево' : weightBalance.deviation.value > 0 ? 'вправо' : ''
+
+  if (weightBalance.deviation.value === 0) {
+    return `Баланс: идеальный • Вес: ${weightBalance.totalWeight.value} кг`
+  }
+
+  const statusText = {
+    safe: 'в норме',
+    warning: 'требует внимания',
+    danger: 'критический перекос!',
+  }[weightBalance.status.value]
+
+  return `Смещение: ${percent}% ${direction} • ${statusText}`
+})
 
 /* =========================
    REFS
@@ -529,9 +589,27 @@ function getContrastColor(hexColor: string | undefined): string {
     />
     </div>
 
-    <!-- ВОРОТА ПОГРУЗКИ -->
-    <div class="truck-doors">
-    </div>
+    <!-- ВОРОТА ПОГРУЗКИ / ИНДИКАТОР БАЛАНСА -->
+    <Tooltip :text="balanceTooltipText" position="top" :delay="200">
+      <div
+          class="truck-doors"
+          :style="balanceGradientStyle"
+          role="meter"
+          :aria-valuenow="weightBalance.deviation.value"
+          :aria-valuemin="-1"
+          :aria-valuemax="1"
+          aria-label="Индикатор баланса веса"
+      >
+        <!-- Центральная линия -->
+        <div class="truck-doors__center" />
+        <!-- Маркер центра тяжести -->
+        <div
+            v-if="weightBalance.hasWeightedItems.value"
+            class="truck-doors__marker"
+            :style="{ left: `${balanceMarkerPosition}%` }"
+        />
+      </div>
+    </Tooltip>
   </div>
 </template>
 
@@ -797,11 +875,46 @@ function getContrastColor(hexColor: string | undefined): string {
 }
 
 /* =========================
-   TRUCK DOORS
+   TRUCK DOORS / BALANCE INDICATOR
 ========================= */
 
 .truck-doors {
-  background: #354057;
+  position: relative;
+  width: 100%;
   height: 10px;
+  cursor: help;
+  /* Фон задаётся динамически через :style */
+  transition: background 0.3s ease;
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: #dddeeb;
+    pointer-events: none;
+    z-index: -1;
+  }
+}
+
+.truck-doors__center {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(0, 0, 0, 0.15);
+  transform: translateX(-50%);
+}
+
+.truck-doors__marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 4px;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  border-radius: 2px;
+  transform: translateX(-50%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: left 0.3s ease;
 }
 </style>

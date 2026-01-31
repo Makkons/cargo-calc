@@ -15,6 +15,10 @@ export interface PdfExportData {
   /** Подпись для заполнения: "Объём" или "Площадь" */
   fillLabel: string
   usedWeight: number
+  /** Отклонение баланса (-1 до 1) */
+  balanceDeviation?: number
+  /** Статус баланса */
+  balanceStatus?: 'safe' | 'warning' | 'danger'
 }
 
 /**
@@ -76,9 +80,10 @@ function createDataPage(data: PdfExportData): HTMLElement {
     <div style="margin-bottom: 20px; padding: 12px; background: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb;">
       <div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">${data.containerName || 'Машина'}</div>
       <div style="font-size: 13px; color: #374151;">
-        <div>Размеры: ${data.container.width} × ${data.container.length} × ${data.container.height} см</div>
-        <div>${data.fillLabel} заполнения: ${Math.round(data.fill * 100)}%</div>
-        ${data.usedWeight > 0 ? `<div>Общий вес: ${data.usedWeight} кг</div>` : ''}
+        <div style="padding: 2px 0">Размеры: ${data.container.width} × ${data.container.length} × ${data.container.height} см</div>
+        <div style="padding: 2px 0">${data.fillLabel} заполнения: ${Math.round(data.fill * 100)}%</div>
+        ${data.usedWeight > 0 ? `<div style="padding: 2px 0">Общий вес: ${data.usedWeight} кг</div>` : ''}
+        ${formatBalanceInfo(data.balanceDeviation, data.balanceStatus)}
       </div>
     </div>
 
@@ -106,6 +111,42 @@ function escapeHtml(text: string): string {
   const div = document.createElement('div')
   div.textContent = text
   return div.innerHTML
+}
+
+/**
+ * Форматирует информацию о балансе для PDF
+ */
+function formatBalanceInfo(
+  deviation: number | undefined,
+  status: 'safe' | 'warning' | 'danger' | undefined
+): string {
+  if (deviation === undefined || status === undefined) {
+    return ''
+  }
+
+  const percent = Math.abs(deviation * 100).toFixed(0)
+  const direction = deviation < 0 ? 'влево' : deviation > 0 ? 'вправо' : ''
+
+  const statusColors = {
+    safe: '#4caf50',
+    warning: '#ff9800',
+    danger: '#f44336',
+  }
+
+  const statusLabels = {
+    safe: 'в норме',
+    warning: 'требует внимания',
+    danger: 'критический перекос',
+  }
+
+  const color = statusColors[status]
+  const label = statusLabels[status]
+
+  if (deviation === 0) {
+    return `<div style="padding: 2px 0;">Баланс: <span style="color: ${color};">идеальный</span></div>`
+  }
+
+  return `<div style="padding: 2px 0;">Баланс: <span style="color: ${color};">${percent}% ${direction} (${label})</span></div>`
 }
 
 /**

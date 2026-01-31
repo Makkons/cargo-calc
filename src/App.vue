@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, toRaw, onMounted, markRaw } from 'vue'
+import { ref, computed, watch, toRaw, onMounted, markRaw } from 'vue'
 
 import CargoTemplates from '@/components/CargoTemplates.vue'
 import ContainerTemplates from '@/components/ContainerTemplates.vue'
@@ -58,6 +58,36 @@ const containers = useContainerManager({
 
 const history = usePackingHistory()
 const session = usePackingSession()
+
+/* =========================
+   WEIGHT BALANCE (for PDF export)
+========================= */
+
+const weightBalance = computed(() => {
+    if (!containers.active.value) return null
+
+    const container = containers.active.value.container
+    const placements = packing.placements.value
+
+    // Простой расчёт без composable (для PDF)
+    const weightedPlacements = placements.filter(p => typeof p.weight === 'number' && p.weight > 0)
+    if (weightedPlacements.length === 0) return null
+
+    const totalWeight = weightedPlacements.reduce((sum, p) => sum + (p.weight ?? 0), 0)
+    const totalMoment = weightedPlacements.reduce((sum, p) => {
+        const center = p.x + p.width / 2
+        return sum + (p.weight ?? 0) * center
+    }, 0)
+
+    const centerOfGravity = totalMoment / totalWeight
+    const containerCenter = container.width / 2
+    const deviation = Math.max(-1, Math.min(1, (centerOfGravity - containerCenter) / containerCenter))
+
+    const absDeviation = Math.abs(deviation)
+    const status = absDeviation >= 0.25 ? 'danger' : absDeviation >= 0.10 ? 'warning' : 'safe'
+
+    return { deviation, status }
+})
 
 /* =========================
    MODE SYNC
@@ -125,7 +155,7 @@ function handleDropCargoAt(template: CargoTemplate, x: number, y: number): boole
 
 function showCargoResult(success: boolean, name: string) {
     if (success) {
-        toast.success(`Груз "${name}" добавлен`)
+        // toast.success(`Груз "${name}" добавлен`)
     } else {
         toast.error('Нет места для груза')
     }
@@ -175,6 +205,8 @@ async function handleExportPdf() {
             fill: isProMode.value ? packing.volumeFill.value : packing.floorFill.value,
             fillLabel: isProMode.value ? 'Объём' : 'Площадь',
             usedWeight: packing.usedWeight.value,
+            balanceDeviation: weightBalance.value?.deviation,
+            balanceStatus: weightBalance.value?.status,
         }),
         {
             loading: 'Создание PDF...',

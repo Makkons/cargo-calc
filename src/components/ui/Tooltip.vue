@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, onBeforeUnmount, nextTick } from 'vue'
 
 type Position = 'top' | 'right' | 'bottom' | 'left'
 
@@ -16,45 +16,83 @@ const props = withDefaults(defineProps<{
 
 const isVisible = ref(false)
 const triggerEl = ref<HTMLElement | null>(null)
+const tooltipEl = ref<HTMLElement | null>(null)
 const tooltipStyle = ref<Record<string, string>>({})
 
 let showTimeout: ReturnType<typeof setTimeout> | null = null
 
-function updatePosition() {
+const VIEWPORT_PADDING = 8
+const GAP = 8
+
+/**
+ * Корректирует позицию tooltip, чтобы он не выходил за границы viewport
+ */
+function clampToViewport(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { x: number; y: number } {
+  const maxX = window.innerWidth - width - VIEWPORT_PADDING
+  const maxY = window.innerHeight - height - VIEWPORT_PADDING
+
+  return {
+    x: Math.max(VIEWPORT_PADDING, Math.min(x, maxX)),
+    y: Math.max(VIEWPORT_PADDING, Math.min(y, maxY)),
+  }
+}
+
+async function updatePosition() {
   if (!triggerEl.value) return
 
   const rect = triggerEl.value.getBoundingClientRect()
-  const gap = 8
+
+  // Сначала позиционируем tooltip за пределами видимости для измерения
+  tooltipStyle.value = {
+    left: '-9999px',
+    top: '-9999px',
+    transform: 'none',
+    visibility: 'hidden',
+  }
+
+  // Ждём рендер для получения размеров
+  await nextTick()
+
+  if (!tooltipEl.value) return
+
+  const tooltipRect = tooltipEl.value.getBoundingClientRect()
+  const tooltipWidth = tooltipRect.width
+  const tooltipHeight = tooltipRect.height
+
+  let x = 0
+  let y = 0
 
   switch (props.position) {
     case 'right':
-      tooltipStyle.value = {
-        left: `${rect.right + gap}px`,
-        top: `${rect.top + rect.height / 2}px`,
-        transform: 'translateY(-50%)',
-      }
+      x = rect.right + GAP
+      y = rect.top + rect.height / 2 - tooltipHeight / 2
       break
     case 'left':
-      tooltipStyle.value = {
-        right: `${window.innerWidth - rect.left + gap}px`,
-        top: `${rect.top + rect.height / 2}px`,
-        transform: 'translateY(-50%)',
-      }
+      x = rect.left - GAP - tooltipWidth
+      y = rect.top + rect.height / 2 - tooltipHeight / 2
       break
     case 'top':
-      tooltipStyle.value = {
-        left: `${rect.left + rect.width / 2}px`,
-        top: `${rect.top - gap}px`,
-        transform: 'translate(-50%, -100%)',
-      }
+      x = rect.left + rect.width / 2 - tooltipWidth / 2
+      y = rect.top - GAP - tooltipHeight
       break
     case 'bottom':
-      tooltipStyle.value = {
-        left: `${rect.left + rect.width / 2}px`,
-        top: `${rect.bottom + gap}px`,
-        transform: 'translateX(-50%)',
-      }
+      x = rect.left + rect.width / 2 - tooltipWidth / 2
+      y = rect.bottom + GAP
       break
+  }
+
+  const clamped = clampToViewport(x, y, tooltipWidth, tooltipHeight)
+
+  tooltipStyle.value = {
+    left: `${clamped.x}px`,
+    top: `${clamped.y}px`,
+    transform: 'none',
+    visibility: 'visible',
   }
 }
 
@@ -62,8 +100,9 @@ function handleMouseEnter() {
   if (props.disabled) return
 
   showTimeout = setTimeout(() => {
-    updatePosition()
     isVisible.value = true
+    // updatePosition вызывается после рендера через nextTick внутри
+    nextTick(() => updatePosition())
   }, props.delay)
 }
 
@@ -98,6 +137,7 @@ onBeforeUnmount(() => {
     <Transition name="tooltip">
       <div
         v-if="isVisible"
+        ref="tooltipEl"
         class="tooltip"
         :class="`tooltip--${position}`"
         :style="tooltipStyle"
@@ -118,16 +158,18 @@ onBeforeUnmount(() => {
   position: fixed;
   z-index: 10000;
 
+  max-width: 300px;
   padding: 6px 10px;
   border-radius: 6px;
 
-  background: var(--color-background-soft);
-  color: var(--color-text);
+  background: white;
+  color: #333;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 
   font-size: 13px;
-  line-height: 1.3;
-  white-space: nowrap;
+  line-height: 1.4;
+  white-space: normal;
+  word-wrap: break-word;
   pointer-events: none;
 }
 
