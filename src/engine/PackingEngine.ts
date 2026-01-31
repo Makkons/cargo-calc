@@ -267,13 +267,14 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
      * 3. Ищем позиции вплотную к остальным ближайшим грузам
      * 4. Fallback: поиск по сетке
      *
-     * Используем Евклидово расстояние для интуитивной сортировки.
+     * @param floorOnly - искать только позиции на полу (z === 0)
      */
     private findNearestPositionCore(
         template: ItemTemplate,
         targetX: number,
         targetY: number,
-        maxRadius: number
+        maxRadius: number,
+        floorOnly: boolean = false
     ): { x: number; y: number; z: number } | null {
         const snap = (v: number) => snapToGrid(v, this.step)
         const snappedX = snap(targetX)
@@ -282,9 +283,16 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         const euclidean = (x: number, y: number) =>
             Math.sqrt((x - snappedX) ** 2 + (y - snappedY) ** 2)
 
+        // Проверка: подходит ли позиция с учётом floorOnly
+        const isValidPosition = (z: number | null): z is number => {
+            if (z === null) return false
+            if (floorOnly && z !== 0) return false
+            return true
+        }
+
         // 1. Проверяем целевую точку
         const z = this.canPlaceAt(template, snappedX, snappedY)
-        if (z !== null) {
+        if (isValidPosition(z)) {
             return { x: snappedX, y: snappedY, z }
         }
 
@@ -302,7 +310,7 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
 
             for (const pos of priorityPositions) {
                 const z = this.canPlaceAt(template, pos.x, pos.y)
-                if (z !== null) {
+                if (isValidPosition(z)) {
                     return { x: pos.x, y: pos.y, z }
                 }
             }
@@ -317,26 +325,115 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
 
         for (const pos of nearbyPositions) {
             const z = this.canPlaceAt(template, pos.x, pos.y)
-            if (z !== null) {
+            if (isValidPosition(z)) {
                 return { x: pos.x, y: pos.y, z }
             }
         }
 
-        // 5. Fallback: поиск по сетке
-        const gridPositions = this.getGridPositions(snappedX, snappedY, maxRadius)
+        // 5. Для floorOnly: сразу переходим к полному сканированию пола (быстрее чем сетка)
+        if (floorOnly) {
+            const found = this.findFloorPositionFullScan(template, snappedX, snappedY)
+            if (found) return found
+        } else {
+            // Fallback: поиск по сетке (ограниченный радиус) - только для режима со стекингом
+            const gridPositions = this.getGridPositions(snappedX, snappedY, maxRadius)
 
-        for (const pos of gridPositions) {
-            if (pos.x < 0 || pos.y < 0) continue
-            if (pos.x + template.width > this.container.width) continue
-            if (pos.y + template.length > this.container.length) continue
+            for (const pos of gridPositions) {
+                if (pos.x < 0 || pos.y < 0) continue
+                if (pos.x + template.width > this.container.width) continue
+                if (pos.y + template.length > this.container.length) continue
 
-            const z = this.canPlaceAt(template, pos.x, pos.y)
-            if (z !== null) {
-                return { x: pos.x, y: pos.y, z }
+                const z = this.canPlaceAt(template, pos.x, pos.y)
+                if (isValidPosition(z)) {
+                    return { x: pos.x, y: pos.y, z }
+                }
             }
         }
 
         return null
+    }
+
+    /**
+     * Полное сканирование пола контейнера.
+     * Оптимизировано: используем быструю проверку пересечения bbox вместо canPlaceAt.
+     */
+    private findFloorPositionFullScan(
+        template: ItemTemplate,
+        targetX: number,
+        targetY: number
+    ): { x: number; y: number; z: number } | null {
+        const maxX = this.container.width - template.width
+        const maxY = this.container.length - template.length
+
+        // Предвычисляем bounding boxes грузов на полу
+        const floorPlacements = this.placements.filter(p => p.z === 0)
+
+        // Быстрая проверка: не пересекается ли позиция с существующими грузами
+        const canPlaceOnFloor = (x: number, y: number): boolean => {
+            const right = x + template.width
+            const bottom = y + template.length
+
+            for (const p of floorPlacements) {
+                // Проверка пересечения прямоугольников
+                if (x < p.x + p.width && right > p.x &&
+                    y < p.y + p.length && bottom > p.y) {
+                    return false
+                }
+            }
+            return true
+        }
+
+        // Шаг 1: Грубый поиск с большим шагом
+        const coarseStep = Math.max(this.step * 20, 200)
+        type Candidate = { x: number; y: number; dist: number }
+        const candidates: Candidate[] = []
+
+        for (let y = 0; y <= maxY; y += coarseStep) {
+            for (let x = 0; x <= maxX; x += coarseStep) {
+                if (canPlaceOnFloor(x, y)) {
+                    const dist = (x - targetX) ** 2 + (y - targetY) ** 2
+                    candidates.push({ x, y, dist })
+                }
+            }
+        }
+
+        if (candidates.length === 0) return null
+
+        // Берём ближайшего кандидата
+        candidates.sort((a, b) => a.dist - b.dist)
+        const best = candidates[0]
+
+        // Шаг 2: Уточнение с мелким шагом вокруг найденной позиции
+        let bestX = best.x
+        let bestY = best.y
+        let bestDist = best.dist
+
+        const refineRange = coarseStep
+        const refineStep = this.step
+
+        for (let dy = -refineRange; dy <= refineRange; dy += refineStep) {
+            for (let dx = -refineRange; dx <= refineRange; dx += refineStep) {
+                const x = best.x + dx
+                const y = best.y + dy
+
+                if (x < 0 || y < 0 || x > maxX || y > maxY) continue
+
+                if (canPlaceOnFloor(x, y)) {
+                    const dist = (x - targetX) ** 2 + (y - targetY) ** 2
+                    if (dist < bestDist) {
+                        bestX = x
+                        bestY = y
+                        bestDist = dist
+                    }
+                }
+            }
+        }
+
+        // Финальная проверка через canPlaceAt (для fragile и других ограничений)
+        const z = this.canPlaceAt(template, bestX, bestY)
+        if (z !== 0) return null
+
+        return { x: bestX, y: bestY, z: 0 }
     }
 
     /**
@@ -612,6 +709,9 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
             return { placement: original, relocated: false }
         }
 
+        // Если груз на полу — поворот тоже должен быть на полу
+        const floorOnly = original.z === 0
+
         const index = this.placements.findIndex(p => p.id === id)
 
         this.commit()
@@ -633,13 +733,26 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         let newY = original.y
         let relocated = false
 
-        // 2. Если не влезает и разрешён relocate — ищем ближайшую позицию
-        if (z === null && allowRelocate) {
+        // Проверяем что позиция валидна с учётом floorOnly
+        const isValidZ = (z: number | null): z is number => {
+            if (z === null) return false
+            if (floorOnly && z !== 0) return false
+            return true
+        }
+
+        // 2. Если не влезает на месте и разрешён relocate — ищем позицию
+        if (!isValidZ(z) && allowRelocate) {
             // Радиус поиска должен покрывать разницу размеров при повороте
             const sizeDiff = Math.abs(original.width - original.length)
             const searchRadius = Math.max(DEFAULT_SEARCH_RADIUS, sizeDiff + 100)
 
-            const nearest = this.findNearestPlacePosition(rotatedTemplate, original.x, original.y, searchRadius)
+            const nearest = this.findNearestPositionCore(
+                rotatedTemplate,
+                original.x,
+                original.y,
+                searchRadius,
+                floorOnly
+            )
             if (nearest) {
                 newX = nearest.x
                 newY = nearest.y
@@ -648,9 +761,10 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
             }
         }
 
-        if (z === null) {
+        if (!isValidZ(z)) {
             // Не влезает нигде — откат
             this.placements.splice(index, 0, original)
+            this.rebuildHeightMap()
             return fail
         }
 

@@ -64,12 +64,21 @@ export class HeightMap {
 
     /**
      * Возвращает базовую высоту или null, если нет полной опоры
+     *
+     * NOTE: Используем цикл вместо Math.min(...spread) чтобы избежать
+     * stack overflow при большом количестве ячеек (>65000)
      */
     getBaseHeight(cells: Cell[]): number | null {
         if (cells.length === 0) return null
 
-        const min = Math.min(...cells.map(c => c.height))
-        const max = Math.max(...cells.map(c => c.height))
+        let min = cells[0].height
+        let max = cells[0].height
+
+        for (let i = 1; i < cells.length; i++) {
+            const h = cells[i].height
+            if (h < min) min = h
+            if (h > max) max = h
+        }
 
         // допустимый перепад = step (или 0, если хочешь строго)
         if (max - min > this.step) return null
