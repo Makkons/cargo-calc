@@ -39,6 +39,10 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "nsis": {
+        "languages": ["Russian"],
+        "displayLanguageSelector": false
+      },
       "wix": {
         "language": "ru-RU"
       }

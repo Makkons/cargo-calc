@@ -141,7 +141,6 @@ function clearFilters() {
   flex-direction: column;
   height: 100%;
   gap: 14px;
-  //padding: var(--spacing-sm, 20px);
 }
 
 /* ===== Header ===== */

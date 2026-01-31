@@ -313,7 +313,6 @@ onMounted(() => {
 
 .cargo-template__controls {
   display: flex;
-  //flex-direction: column;
   gap: var(--spacing-xs, 4px);
 }
 
