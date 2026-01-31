@@ -63,6 +63,14 @@ export interface FindPlacementOptions {
 }
 
 /**
+ * Опции для размещения груза (addItemAt, movePlacement, etc.)
+ */
+export interface PlaceOptions {
+    /** Размещать только на полу (z = 0) */
+    floorOnly?: boolean
+}
+
+/**
  * Кандидатная позиция для размещения
  */
 export interface CandidatePosition {

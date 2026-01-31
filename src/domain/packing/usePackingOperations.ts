@@ -132,7 +132,9 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
                 fragile: template.fragile,
             },
             x,
-            y
+            y,
+            undefined, // maxRadius - default
+            { floorOnly: floorOnly.value }
         )
 
         if (placement) {
@@ -168,7 +170,7 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
     }
 
     function movePlacement(id: string, x: number, y: number): Placement | null {
-        const moved = engine.value.movePlacement(id, x, y)
+        const moved = engine.value.movePlacement(id, x, y, { floorOnly: floorOnly.value })
 
         if (moved) {
             sync()
@@ -235,7 +237,7 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
      * Используется для валидации во время drag-and-drop.
      */
     function checkMovePosition(id: string, x: number, y: number): MoveCheckResult {
-        const z = engine.value.canMoveToPosition(id, x, y)
+        const z = engine.value.canMoveToPosition(id, x, y, { floorOnly: floorOnly.value })
         return z !== null ? { valid: true, z } : { valid: false }
     }
 
@@ -244,7 +246,7 @@ export function usePackingOperations(ctx: PackingOperationsContext): PackingOper
      * Используется когда пользователь отпускает груз в невалидной позиции.
      */
     function findDropPosition(id: string, x: number, y: number): DropPosition | null {
-        return engine.value.findNearestDropPosition(id, x, y)
+        return engine.value.findNearestDropPosition(id, x, y, undefined, { floorOnly: floorOnly.value })
     }
 
     /**

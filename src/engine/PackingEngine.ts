@@ -4,6 +4,7 @@ import type {
     Placement,
     EngineState,
     FindPlacementOptions,
+    PlaceOptions,
     PlacementProvider,
     HeightMapProvider,
     PlacementUpdateResult
@@ -130,10 +131,21 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
 
     /**
      * Добавляет груз в конкретную позицию (x, y)
+     * @param options.floorOnly - размещать только на полу (z = 0)
      */
-    addItemAt(template: ItemTemplate, x: number, y: number): Placement | null {
+    addItemAt(
+        template: ItemTemplate,
+        x: number,
+        y: number,
+        options: PlaceOptions = {}
+    ): Placement | null {
         const z = this.canPlaceAt(template, x, y)
         if (z === null) return null
+
+        // В режиме floorOnly размещение разрешено только на полу
+        if (options.floorOnly && z !== 0) {
+            return null
+        }
 
         const placement = createPlacement(template, x, y, z)
 
@@ -146,34 +158,38 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
     /**
      * Добавляет груз в позицию (x, y) или ближайшую валидную.
      * Используется при drag-and-drop нового груза из шаблонов.
+     * @param options.floorOnly - размещать только на полу (z = 0)
      */
     addItemAtOrNear(
         template: ItemTemplate,
         x: number,
         y: number,
-        maxRadius: number = DEFAULT_SEARCH_RADIUS
+        maxRadius: number = DEFAULT_SEARCH_RADIUS,
+        options: PlaceOptions = {}
     ): Placement | null {
         // Сначала пробуем точную позицию
-        const direct = this.addItemAt(template, x, y)
+        const direct = this.addItemAt(template, x, y, options)
         if (direct) return direct
 
         // Ищем ближайшую валидную позицию
-        const nearest = this.findNearestPlacePosition(template, x, y, maxRadius)
+        const nearest = this.findNearestPlacePosition(template, x, y, maxRadius, options)
         if (!nearest) return null
 
-        return this.addItemAt(template, nearest.x, nearest.y)
+        return this.addItemAt(template, nearest.x, nearest.y, options)
     }
 
     /**
      * Ищет ближайшую валидную позицию для НОВОГО груза.
+     * @param options.floorOnly - искать только позиции на полу (z = 0)
      */
     findNearestPlacePosition(
         template: ItemTemplate,
         targetX: number,
         targetY: number,
-        maxRadius: number = DEFAULT_SEARCH_RADIUS
+        maxRadius: number = DEFAULT_SEARCH_RADIUS,
+        options: PlaceOptions = {}
     ): { x: number; y: number; z: number } | null {
-        return this.findNearestPositionCore(template, targetX, targetY, maxRadius)
+        return this.findNearestPositionCore(template, targetX, targetY, maxRadius, options.floorOnly ?? false)
     }
 
     /**
@@ -200,9 +216,10 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
      * Проверяет, можно ли переместить груз в позицию (x, y) БЕЗ реального перемещения.
      * Используется для валидации во время drag-and-drop.
      *
+     * @param options.floorOnly - разрешать только позиции на полу (z = 0)
      * @returns z-координата если можно, null если нельзя
      */
-    canMoveToPosition(id: string, x: number, y: number): number | null {
+    canMoveToPosition(id: string, x: number, y: number, options: PlaceOptions = {}): number | null {
         const placement = this.getPlacementById(id)
         if (!placement) return null
 
@@ -222,18 +239,25 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         this.placements.splice(index, 0, placement)
         this.rebuildHeightMap()
 
+        // В режиме floorOnly разрешаем только позиции на полу
+        if (options.floorOnly && z !== 0) {
+            return null
+        }
+
         return z
     }
 
     /**
      * Ищет ближайшую валидную позицию для перемещения существующего груза.
      * Временно убирает груз из placements для корректного поиска.
+     * @param options.floorOnly - искать только позиции на полу (z = 0)
      */
     findNearestDropPosition(
         id: string,
         targetX: number,
         targetY: number,
-        maxRadius: number = DEFAULT_SEARCH_RADIUS
+        maxRadius: number = DEFAULT_SEARCH_RADIUS,
+        options: PlaceOptions = {}
     ): { x: number; y: number; z: number } | null {
         const placement = this.getPlacementById(id)
         if (!placement) return null
@@ -249,7 +273,7 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
         this.placements.splice(index, 1)
         this.rebuildHeightMap()
 
-        const result = this.findNearestPositionCore(template, targetX, targetY, maxRadius)
+        const result = this.findNearestPositionCore(template, targetX, targetY, maxRadius, options.floorOnly ?? false)
 
         // Восстанавливаем груз
         this.placements.splice(index, 0, placement)
@@ -554,8 +578,9 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
 
     /**
      * Перемещает груз в новую позицию
+     * @param options.floorOnly - разрешать только позиции на полу (z = 0)
      */
-    movePlacement(id: string, x: number, y: number): Placement | null {
+    movePlacement(id: string, x: number, y: number, options: PlaceOptions = {}): Placement | null {
         const original = this.getPlacementById(id)
         if (!original) return null
 
@@ -575,6 +600,13 @@ export class PackingEngine implements PlacementProvider, HeightMapProvider {
 
         // Если нельзя — откат
         if (z === null) {
+            this.placements.splice(index, 0, original)
+            this.rebuildHeightMap()
+            return null
+        }
+
+        // В режиме floorOnly разрешаем только позиции на полу
+        if (options.floorOnly && z !== 0) {
             this.placements.splice(index, 0, original)
             this.rebuildHeightMap()
             return null
